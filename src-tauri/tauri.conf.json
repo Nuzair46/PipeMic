@@ -1,0 +1,48 @@
+{
+  "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
+  "productName": "PipeMic",
+  "version": "0.1.0",
+  "identifier": "com.pipemic.desktop",
+  "build": {
+    "beforeDevCommand": "yarn dev",
+    "devUrl": "http://127.0.0.1:1420",
+    "beforeBuildCommand": "yarn build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "PipeMic",
+        "width": 1040,
+        "height": 720,
+        "minWidth": 860,
+        "minHeight": 600,
+        "resizable": true,
+        "center": true
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "copyright": "Copyright (c) 2026 Nuzair46",
+    "icon": ["icons/icon.ico"],
+    "license": "MIT",
+    "licenseFile": "installer/LICENSE_AND_THIRD_PARTY_NOTICES.txt",
+    "resources": {
+      "../THIRD_PARTY_NOTICES.md": "THIRD_PARTY_NOTICES.md"
+    },
+    "targets": ["nsis"],
+    "windows": {
+      "webviewInstallMode": {
+        "type": "downloadBootstrapper"
+      },
+      "nsis": {
+        "installMode": "perMachine",
+        "installerHooks": "nsis/installer-hooks.nsh"
+      }
+    }
+  }
+}
