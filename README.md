@@ -28,17 +28,6 @@
 
 PipeMic is a voicemeter alternative for routing multiple physical microphones plus selected application audio into a virtual microphone device.
 
-PipeMic lets you:
-
-- Add one or more physical microphones
-- Add selected application sources such as games, music players, or chat apps
-- Adjust gain and mute state per source
-- Control master output gain
-- Downmix the final route to mono
-- Send the mixed output to `CABLE Input (VB-Audio Virtual Cable)`
-- Use global hotkeys for mic mute, app mute, and start/stop routing
-- Start with Windows and minimize to the system tray
-
 ## Download & Install (End Users)
 
 1. Open the [Releases page](https://github.com/Nuzair46/PipeMic/releases)
