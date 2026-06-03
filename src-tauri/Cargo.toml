@@ -1,6 +1,6 @@
 [package]
 name = "pipemic"
-version = "0.1.0"
+version = "1.0.0"
 description = "PipeMic desktop audio router"
 authors = ["Nuzair46"]
 license = "MIT"
