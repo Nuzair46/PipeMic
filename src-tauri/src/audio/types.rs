@@ -87,3 +87,15 @@ pub fn is_virtual_cable_name(name: &str) -> bool {
         || normalized.contains("virtual cable")
         || normalized.contains("voicemeeter")
 }
+
+pub fn is_canonical_vb_cable_input_name(name: &str) -> bool {
+    let normalized = name.to_ascii_lowercase();
+    is_virtual_cable_name(name)
+        && normalized.contains("cable input")
+        && !is_sixteen_channel_cable_name(name)
+}
+
+pub fn is_sixteen_channel_cable_name(name: &str) -> bool {
+    let normalized = name.to_ascii_lowercase();
+    normalized.contains("cable") && normalized.contains("16ch")
+}

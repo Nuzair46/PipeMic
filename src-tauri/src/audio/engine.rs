@@ -19,7 +19,10 @@ use crate::config::{AppConfig, ControlUpdate, MicSourceConfig};
 use super::{
     AudioResult, devices,
     mixer::{MixerControls, SourceControl},
-    types::{AudioDevice, LevelMeters, RouteState, RouteStatus},
+    types::{
+        AudioDevice, LevelMeters, RouteState, RouteStatus, is_canonical_vb_cable_input_name,
+        is_sixteen_channel_cable_name,
+    },
 };
 
 #[cfg(windows)]
@@ -50,7 +53,24 @@ impl AudioEngine {
         let capture_devices = devices::list_capture_devices()?;
         let render_devices = devices::list_render_devices()?;
 
-        if !devices::contains_device(&render_devices, &config.output_device_id) {
+        let output_device_id = match resolve_output_device_id(&render_devices, &config.output_device_id)
+        {
+            Some(id) => id,
+            None => {
+                self.stop_worker();
+                self.status = RouteStatus {
+                    state: RouteState::DeviceMissing,
+                    message: "Selected output is unavailable".to_string(),
+                    meters: LevelMeters::default(),
+                    warnings: vec![
+                        "Pick an active render endpoint, ideally VB-CABLE input.".to_string(),
+                    ],
+                };
+                return Ok(self.status.clone());
+            }
+        };
+
+        if !devices::contains_device(&render_devices, &Some(output_device_id.clone())) {
             self.stop_worker();
             self.status = RouteStatus {
                 state: RouteState::DeviceMissing,
@@ -83,8 +103,13 @@ impl AudioEngine {
             warnings,
         };
         self.stop_worker();
-        self.worker =
-            RouteWorker::start(config.clone(), self.controls.clone(), self.status.clone());
+        let mut worker_config = config.clone();
+        worker_config.output_device_id = Some(output_device_id);
+        self.worker = RouteWorker::start(
+            worker_config,
+            self.controls.clone(),
+            self.status.clone(),
+        );
         Ok(self.current_status())
     }
 
@@ -152,6 +177,27 @@ impl AudioEngine {
             worker.stop();
         }
     }
+}
+
+fn resolve_output_device_id(
+    render_devices: &[AudioDevice],
+    selected_id: &Option<String>,
+) -> Option<String> {
+    let selected_id = selected_id.as_ref()?;
+    let selected = render_devices
+        .iter()
+        .find(|device| &device.id == selected_id)?;
+
+    if is_sixteen_channel_cable_name(&selected.name) {
+        if let Some(canonical) = render_devices
+            .iter()
+            .find(|device| is_canonical_vb_cable_input_name(&device.name))
+        {
+            return Some(canonical.id.clone());
+        }
+    }
+
+    Some(selected.id.clone())
 }
 
 impl Drop for AudioEngine {

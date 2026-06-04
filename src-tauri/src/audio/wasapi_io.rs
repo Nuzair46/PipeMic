@@ -38,6 +38,7 @@ const HNS_PER_SECOND: i64 = 10_000_000;
 const WAVE_FORMAT_PCM_TAG: u16 = 1;
 const WAVE_FORMAT_IEEE_FLOAT_TAG: u16 = 3;
 const WAVE_FORMAT_EXTENSIBLE_TAG: u16 = 0xfffe;
+const AUDCLNT_E_DEVICE_IN_USE: &str = "HRESULT 0x8889000A";
 const IEEE_FLOAT_SUBFORMAT: windows::core::GUID =
     windows::core::GUID::from_u128(0x00000003_0000_0010_8000_00aa00389b71);
 const PCM_SUBFORMAT: windows::core::GUID =
@@ -47,6 +48,7 @@ const PCM_SUBFORMAT: windows::core::GUID =
 enum SampleKind {
     Float32,
     Int16,
+    Int24,
     Int32,
 }
 
@@ -127,16 +129,20 @@ pub(crate) fn open_process_loopback_capture(
 pub(crate) fn open_render(spec: &RenderSpec) -> AudioResult<Box<dyn AudioRender>> {
     unsafe {
         windows_wasapi::init_com();
-        let client = windows_wasapi::audio_client_for_endpoint_id(&spec.device_id)?;
-        let format = initialize_client(
-            &client,
-            desired_float_stereo(),
-            spec.frames_per_buffer,
-            stream_flags(),
-        )?;
-        let render = client.GetService::<IAudioRenderClient>()?;
+        let (client, format) = initialize_render_client(&spec.device_id, spec.frames_per_buffer)?;
+        let render = client.GetService::<IAudioRenderClient>().map_err(|error| {
+            AudioError::Backend(format!(
+                "render GetService(IAudioRenderClient) failed: {}",
+                windows_error_detail(&error)
+            ))
+        })?;
         let buffer_frames = client.GetBufferSize()?;
-        client.Start()?;
+        client.Start().map_err(|error| {
+            AudioError::Backend(format!(
+                "render Start failed: {}",
+                windows_error_detail(&error)
+            ))
+        })?;
 
         Ok(Box::new(WasapiRender {
             client,
@@ -366,6 +372,178 @@ unsafe fn initialize_client(
     Ok(format)
 }
 
+unsafe fn initialize_render_client(
+    device_id: &str,
+    frames_per_buffer: usize,
+) -> AudioResult<(IAudioClient, StreamFormat)> {
+    let mut failures = Vec::new();
+    let desired = desired_float_stereo();
+
+    for (flags, label) in [(stream_flags(), "with conversion"), (0, "without conversion")] {
+        if let Some(result) = try_initialize_render_format(
+            device_id,
+            &desired,
+            frames_per_buffer,
+            flags,
+            &format!("48 kHz float stereo {label}"),
+            &mut failures,
+        ) {
+            return Ok(result);
+        }
+    }
+
+    for (flags, label) in [(stream_flags(), "with conversion"), (0, "without conversion")] {
+        if let Some(result) = try_initialize_render_mix_format(
+            device_id,
+            frames_per_buffer,
+            flags,
+            &format!("device mix format {label}"),
+            &mut failures,
+        ) {
+            return Ok(result);
+        }
+    }
+
+    Err(AudioError::Backend(render_initialize_failure_message(&failures)))
+}
+
+unsafe fn try_initialize_render_format(
+    device_id: &str,
+    wave_format: &WAVEFORMATEX,
+    frames_per_buffer: usize,
+    flags: u32,
+    label: &str,
+    failures: &mut Vec<String>,
+) -> Option<(IAudioClient, StreamFormat)> {
+    let stream_format = match stream_format_from_wave(wave_format) {
+        Ok(format) => format,
+        Err(error) => {
+            failures.push(format!("{label}: {error}"));
+            return None;
+        }
+    };
+
+    for (duration, duration_label) in [
+        (
+            buffer_duration_hns(frames_per_buffer, stream_format.sample_rate),
+            "requested buffer",
+        ),
+        (0, "default buffer"),
+    ] {
+        let client = match windows_wasapi::audio_client_for_endpoint_id(device_id) {
+            Ok(client) => client,
+            Err(error) => {
+                failures.push(format!("{label}, {duration_label}: {error}"));
+                continue;
+            }
+        };
+
+        match client.Initialize(
+            AUDCLNT_SHAREMODE_SHARED,
+            flags,
+            duration,
+            0,
+            wave_format,
+            None,
+        ) {
+            Ok(()) => return Some((client, stream_format)),
+            Err(error) => failures.push(format!(
+                "{label}, {duration_label}: {}",
+                windows_error_detail(&error)
+            )),
+        }
+    }
+
+    None
+}
+
+unsafe fn try_initialize_render_mix_format(
+    device_id: &str,
+    frames_per_buffer: usize,
+    flags: u32,
+    label: &str,
+    failures: &mut Vec<String>,
+) -> Option<(IAudioClient, StreamFormat)> {
+    for duration_label in ["requested buffer", "default buffer"] {
+        let client = match windows_wasapi::audio_client_for_endpoint_id(device_id) {
+            Ok(client) => client,
+            Err(error) => {
+                failures.push(format!("{label}, {duration_label}: {error}"));
+                continue;
+            }
+        };
+        let mix_format = match client.GetMixFormat() {
+            Ok(format) if !format.is_null() => format,
+            Ok(_) => {
+                failures.push(format!("{label}, {duration_label}: null mix format"));
+                continue;
+            }
+            Err(error) => {
+                failures.push(format!(
+                    "{label}, {duration_label}: GetMixFormat {}",
+                    windows_error_detail(&error)
+                ));
+                continue;
+            }
+        };
+
+        let stream_format = match stream_format_from_wave(&*mix_format) {
+            Ok(format) => format,
+            Err(error) => {
+                CoTaskMemFree(Some(mix_format as _));
+                failures.push(format!("{label}, {duration_label}: {error}"));
+                continue;
+            }
+        };
+        let duration = if duration_label == "requested buffer" {
+            buffer_duration_hns(frames_per_buffer, stream_format.sample_rate)
+        } else {
+            0
+        };
+
+        let initialized = client.Initialize(
+            AUDCLNT_SHAREMODE_SHARED,
+            flags,
+            duration,
+            0,
+            mix_format,
+            None,
+        );
+        CoTaskMemFree(Some(mix_format as _));
+
+        match initialized {
+            Ok(()) => return Some((client, stream_format)),
+            Err(error) => failures.push(format!(
+                "{label}, {duration_label}: {}",
+                windows_error_detail(&error)
+            )),
+        }
+    }
+
+    None
+}
+
+fn windows_error_detail(error: &windows::core::Error) -> String {
+    let code = error.code().0 as u32;
+    let message = error.message().to_string();
+    if message.trim().is_empty() {
+        format!("HRESULT 0x{code:08X}")
+    } else {
+        format!("HRESULT 0x{code:08X} ({message})")
+    }
+}
+
+fn render_initialize_failure_message(failures: &[String]) -> String {
+    if failures.iter().any(|failure| failure.contains(AUDCLNT_E_DEVICE_IN_USE)) {
+        return "Virtual mic is busy (HRESULT 0x8889000A). Close apps using CABLE Input or CABLE Output, or disable exclusive mode for both VB-CABLE endpoints in Windows Sound settings, then start PipeMic again.".to_string();
+    }
+
+    format!(
+        "render Initialize failed for all formats: {}",
+        failures.join("; ")
+    )
+}
+
 unsafe fn initialize_process_loopback_client(
     client: &IAudioClient,
     frames_per_buffer: usize,
@@ -458,6 +636,8 @@ unsafe fn stream_format_from_wave(format: &WAVEFORMATEX) -> AudioResult<StreamFo
         SampleKind::Float32
     } else if tag == WAVE_FORMAT_PCM_TAG && bits_per_sample == 16 {
         SampleKind::Int16
+    } else if tag == WAVE_FORMAT_PCM_TAG && bits_per_sample == 24 {
+        SampleKind::Int24
     } else if tag == WAVE_FORMAT_PCM_TAG && bits_per_sample == 32 {
         SampleKind::Int32
     } else if tag == WAVE_FORMAT_EXTENSIBLE_TAG {
@@ -467,6 +647,8 @@ unsafe fn stream_format_from_wave(format: &WAVEFORMATEX) -> AudioResult<StreamFo
             SampleKind::Float32
         } else if sub_format == PCM_SUBFORMAT && bits_per_sample == 16 {
             SampleKind::Int16
+        } else if sub_format == PCM_SUBFORMAT && bits_per_sample == 24 {
+            SampleKind::Int24
         } else if sub_format == PCM_SUBFORMAT && bits_per_sample == 32 {
             SampleKind::Int32
         } else {
@@ -515,8 +697,21 @@ unsafe fn read_sample(
     match format.kind {
         SampleKind::Float32 => ptr::read_unaligned(ptr as *const f32).clamp(-1.0, 1.0),
         SampleKind::Int16 => ptr::read_unaligned(ptr as *const i16) as f32 / i16::MAX as f32,
+        SampleKind::Int24 => read_i24(ptr),
         SampleKind::Int32 => ptr::read_unaligned(ptr as *const i32) as f32 / i32::MAX as f32,
     }
+}
+
+unsafe fn read_i24(ptr: *const u8) -> f32 {
+    let raw = ptr::read_unaligned(ptr) as u32
+        | ((ptr::read_unaligned(ptr.add(1)) as u32) << 8)
+        | ((ptr::read_unaligned(ptr.add(2)) as u32) << 16);
+    let signed = if raw & 0x0080_0000 != 0 {
+        (raw | 0xff00_0000) as i32
+    } else {
+        raw as i32
+    };
+    (signed as f32 / 8_388_607.0).clamp(-1.0, 1.0)
 }
 
 unsafe fn write_stereo_frame(
@@ -558,8 +753,18 @@ unsafe fn write_sample(
         SampleKind::Int16 => {
             ptr::write_unaligned(ptr as *mut i16, (sample * i16::MAX as f32) as i16)
         }
+        SampleKind::Int24 => write_i24(ptr, sample),
         SampleKind::Int32 => {
             ptr::write_unaligned(ptr as *mut i32, (sample * i32::MAX as f32) as i32)
         }
     }
+}
+
+unsafe fn write_i24(ptr: *mut u8, sample: f32) {
+    let value = (sample * 8_388_607.0)
+        .round()
+        .clamp(-8_388_608.0, 8_388_607.0) as i32;
+    ptr::write_unaligned(ptr, (value & 0xff) as u8);
+    ptr::write_unaligned(ptr.add(1), ((value >> 8) & 0xff) as u8);
+    ptr::write_unaligned(ptr.add(2), ((value >> 16) & 0xff) as u8);
 }
