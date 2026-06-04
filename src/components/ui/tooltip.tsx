@@ -13,11 +13,10 @@ const TooltipContent = React.forwardRef<
   <TooltipPrimitive.Content
     ref={ref}
     sideOffset={sideOffset}
-    className={cn("z-50 rounded-md border border-border bg-[#070b0d] px-2.5 py-1.5 text-xs text-foreground shadow-xl", className)}
+    className={cn("z-50 rounded-md border border-border bg-background px-2.5 py-1.5 text-xs text-foreground shadow-xl", className)}
     {...props}
   />
 ));
 TooltipContent.displayName = TooltipPrimitive.Content.displayName;
 
 export { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger };
-

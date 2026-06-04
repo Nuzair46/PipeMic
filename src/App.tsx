@@ -1,10 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Circle, Github, Mic, PanelRight, Play, Plus, Settings, SlidersHorizontal, Square, Volume2 } from "lucide-react";
 import {
   api,
   appSourceId,
-  isVbCableDevice,
   isRunning,
+  isVbCableDevice,
   micSourceId,
   outputDevicesForPicker,
   preferredOutputDevice,
@@ -15,34 +14,15 @@ import {
   type ControlUpdate,
   type MicSourceConfig,
   type RouteStatus,
-  type ShortcutConfig,
 } from "@/lib/api";
-import { registerHotkeys } from "@/lib/hotkeys";
-import { Button } from "@/components/ui/button";
-import {
-  Select,
-  SelectContent,
-  SelectGroup,
-  SelectItem,
-  SelectLabel,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
-import { Slider } from "@/components/ui/slider";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
-import { TooltipProvider } from "@/components/ui/tooltip";
-import { DeviceSelect } from "@/components/mixer/DeviceSelect";
-import { LevelMeter } from "@/components/mixer/LevelMeter";
-import { SourceStrip } from "@/components/mixer/SourceStrip";
+import { AppHeader } from "@/components/app/AppHeader";
+import { OutputPanel } from "@/components/app/OutputPanel";
+import { SettingsDialog, cloneAppConfig, settingsValidationError } from "@/components/app/SettingsDialog";
+import { SourcesPanel } from "@/components/app/SourcesPanel";
+import { isSelectableSession, savedDisplayName, uniqueSessionsByExecutable } from "@/components/app/source-labels";
 import { ToastProvider, ToastStack, type AppToast, type ToastTone } from "@/components/ui/toast";
-import { cn, formatGain } from "@/lib/utils";
+import { TooltipProvider } from "@/components/ui/tooltip";
+import { registerHotkeys } from "@/lib/hotkeys";
 
 const stoppedStatus: RouteStatus = {
   state: "stopped",
@@ -67,8 +47,6 @@ const defaultConfig: AppConfig = {
   minimizeToTray: true,
 };
 
-const SELF_EXECUTABLES = new Set(["pipemic.exe"]);
-
 function controlsFromConfig(config: AppConfig): ControlUpdate {
   return {
     micSources: config.micSources.map(({ id, gain, muted }) => ({ id, gain, muted })),
@@ -78,59 +56,11 @@ function controlsFromConfig(config: AppConfig): ControlUpdate {
   };
 }
 
-function isSelectableSession(session: AudioSession) {
-  const executable = session.executable.trim();
-  const normalized = executable.toLowerCase();
-  return (
-    session.state !== "expired" &&
-    normalized.endsWith(".exe") &&
-    !SELF_EXECUTABLES.has(normalized) &&
-    !executable.includes("\\") &&
-    !executable.includes("/")
-  );
-}
-
-function sessionForExecutable(sessions: AudioSession[], executable: string) {
-  const matches = sessions.filter((session) => session.executable.toLowerCase() === executable.toLowerCase());
-  return matches.find((session) => session.state === "active") ?? matches[0] ?? null;
-}
-
-function executableLabel(executable: string) {
-  return executable.replace(/\.exe$/i, "");
-}
-
-function sessionDisplayLabel(session: AudioSession) {
-  const title = session.windowTitle?.trim();
-  if (title) {
-    return title;
-  }
-
-  return session.displayName || executableLabel(session.executable);
-}
-
-function sourceDisplayLabel(source: AppSourceConfig, session: AudioSession | null) {
-  return session ? sessionDisplayLabel(session) : source.displayName ?? executableLabel(source.executable);
-}
-
-function savedDisplayName(session: AudioSession) {
-  return session.displayName || executableLabel(session.executable);
-}
-
-function uniqueSessionsByExecutable(sessions: AudioSession[]) {
-  const seen = new Set<string>();
-  return sessions.filter((session) => {
-    const key = session.executable.toLowerCase();
-    if (seen.has(key)) {
-      return false;
-    }
-    seen.add(key);
-    return true;
-  });
-}
-
 function applyPreferredOutput(config: AppConfig, renderDevices: AudioDevice[]) {
   const selectableRenderDevices = outputDevicesForPicker(renderDevices);
-  const selectedOutputExists = Boolean(config.outputDeviceId && selectableRenderDevices.some((device) => device.id === config.outputDeviceId));
+  const selectedOutputExists = Boolean(
+    config.outputDeviceId && selectableRenderDevices.some((device) => device.id === config.outputDeviceId),
+  );
   if (selectedOutputExists || !selectableRenderDevices.length) {
     return config;
   }
@@ -185,7 +115,10 @@ export default function App() {
     [captureDevices, config.micSources],
   );
   const availableAppSessions = useMemo(
-    () => selectableSessions.filter((session) => !config.appSources.some((source) => source.executable.toLowerCase() === session.executable.toLowerCase())),
+    () =>
+      selectableSessions.filter(
+        (session) => !config.appSources.some((source) => source.executable.toLowerCase() === session.executable.toLowerCase()),
+      ),
     [config.appSources, selectableSessions],
   );
 
@@ -411,22 +344,18 @@ export default function App() {
 
   const updateMicSource = useCallback(
     (sourceId: string, patch: Partial<Pick<MicSourceConfig, "gain" | "muted">>) => {
-      applyControlsConfig(
-        {
-          micSources: configRef.current.micSources.map((source) => (source.id === sourceId ? { ...source, ...patch } : source)),
-        }
-      );
+      applyControlsConfig({
+        micSources: configRef.current.micSources.map((source) => (source.id === sourceId ? { ...source, ...patch } : source)),
+      });
     },
     [applyControlsConfig],
   );
 
   const updateAppSource = useCallback(
     (sourceId: string, patch: Partial<Pick<AppSourceConfig, "gain" | "muted">>) => {
-      applyControlsConfig(
-        {
-          appSources: configRef.current.appSources.map((source) => (source.id === sourceId ? { ...source, ...patch } : source)),
-        }
-      );
+      applyControlsConfig({
+        appSources: configRef.current.appSources.map((source) => (source.id === sourceId ? { ...source, ...patch } : source)),
+      });
     },
     [applyControlsConfig],
   );
@@ -532,169 +461,44 @@ export default function App() {
   return (
     <ToastProvider swipeDirection="right">
       <TooltipProvider delayDuration={150}>
-        <div className="h-screen overflow-hidden p-5">
-          <main className="mx-auto grid h-[calc(100vh-40px)] min-h-[560px] max-w-[1240px] grid-rows-[64px_minmax(0,1fr)] overflow-hidden rounded-lg border border-border bg-[#0e1415] shadow-[0_24px_90px_rgba(0,0,0,0.38)]">
-            <header className="flex h-16 items-center justify-between border-b border-border bg-[#151b1f] px-5">
-              <div>
-                <h1 className="text-lg font-semibold text-foreground">PipeMic</h1>
-                <p className="text-xs text-muted-foreground">Multi-source mixer</p>
-              </div>
-              <div className="flex items-center gap-3">
-                <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                  <Circle className={cn("h-2.5 w-2.5 fill-current", running ? "text-primary" : "text-muted-foreground")} />
-                  <span>{running ? "Live" : "Idle"}</span>
-                </div>
-                <Button
-                  type="button"
-                  variant={running ? "danger" : "default"}
-                  disabled={!running && !canStart}
-                  onClick={running ? stop : start}
-                >
-                  {running ? <Square className="h-4 w-4" /> : <Play className="h-4 w-4" />}
-                  {running ? "Stop" : "Start"}
-                </Button>
-                <Button type="button" variant="ghost" size="icon" onClick={openSettings}>
-                  <Settings className="h-4 w-4" />
-                  <span className="sr-only">Settings</span>
-                </Button>
-              </div>
-            </header>
+        <div className="h-screen overflow-hidden bg-background p-5">
+          <main className="mx-auto grid h-[calc(100vh-40px)] min-h-[560px] max-w-[1240px] grid-rows-[64px_minmax(0,1fr)] overflow-hidden rounded-lg border border-border bg-background shadow-[0_20px_64px_rgba(0,0,0,0.42)]">
+            <AppHeader running={running} canStart={canStart} onStart={start} onStop={stop} onSettings={openSettings} />
 
             <div className="grid min-h-0 grid-cols-[minmax(0,2fr)_minmax(280px,1fr)]">
-              <section className="grid min-h-0 min-w-0 grid-rows-[44px_minmax(0,1fr)_minmax(0,1fr)] border-r border-border">
-                <div className="panel-heading">
-                  <div className="flex items-center gap-2">
-                    <SlidersHorizontal className="h-4 w-4 text-primary" />
-                    <h2 className="text-sm font-semibold uppercase text-muted-foreground">Sources</h2>
-                  </div>
-                </div>
+              <SourcesPanel
+                booting={booting}
+                captureDevices={captureDevices}
+                selectableSessions={selectableSessions}
+                availableMicDevices={availableMicDevices}
+                availableAppSessions={availableAppSessions}
+                micSources={config.micSources}
+                appSources={config.appSources}
+                meters={status.meters}
+                onAddMicSource={addMicSource}
+                onAddAppSource={addAppSource}
+                onMicSourceChange={updateMicSource}
+                onAppSourceChange={updateAppSource}
+                onRemoveMicSource={removeMicSource}
+                onRemoveAppSource={removeAppSource}
+              />
 
-                <div className="grid min-h-0 grid-rows-[48px_minmax(0,1fr)] border-b border-border">
-                  <SourceSectionHeader
-                    icon={<Mic className="h-4 w-4 text-primary" />}
-                    title="Physical Microphones"
-                    addDisabled={!availableMicDevices.length}
-                    addLabel="Microphone"
-                    onAdd={addMicSource}
-                    options={availableMicDevices.map((device) => ({
-                      value: device.id,
-                      label: device.name,
-                      detail: device.isDefault ? "Default" : undefined,
-                    }))}
-                  />
-                  <div className="min-h-0 overflow-y-auto overscroll-contain">
-                    {config.micSources.length ? (
-                      config.micSources.map((source) => {
-                        const device = captureDevices.find((item) => item.id === source.deviceId) ?? null;
-                        return (
-                          <SourceStrip
-                            key={source.id}
-                            kind="mic"
-                            title={device?.name ?? source.deviceId}
-                            detail={device ? undefined : "Device unavailable"}
-                            gain={source.gain}
-                            muted={source.muted}
-                            level={status.meters.micPeaks[source.id] ?? 0}
-                            inactive={!device}
-                            onGainChange={(gain) => updateMicSource(source.id, { gain })}
-                            onMutedChange={(muted) => updateMicSource(source.id, { muted })}
-                            onRemove={() => removeMicSource(source.id)}
-                          />
-                        );
-                      })
-                    ) : (
-                      <EmptySourceRow label={booting ? "Loading microphones" : "No microphones added"} />
-                    )}
-                  </div>
-                </div>
-
-                <div className="grid min-h-0 grid-rows-[48px_minmax(0,1fr)]">
-                  <SourceSectionHeader
-                    icon={<Volume2 className="h-4 w-4 text-primary" />}
-                    title="Application Sources"
-                    addDisabled={!availableAppSessions.length}
-                    addLabel="Application"
-                    onAdd={addAppSource}
-                    options={availableAppSessions.map((session) => ({
-                      value: session.id,
-                      label: sessionDisplayLabel(session),
-                      detail: session.executable,
-                    }))}
-                  />
-                  <div className="min-h-0 overflow-y-auto overscroll-contain">
-                    {config.appSources.length ? (
-                      config.appSources.map((source) => {
-                        const session = sessionForExecutable(selectableSessions, source.executable);
-                        const active = session?.state === "active";
-                        return (
-                          <SourceStrip
-                            key={source.id}
-                            kind="app"
-                            title={sourceDisplayLabel(source, session)}
-                            detail={undefined}
-                            gain={source.gain}
-                            muted={source.muted}
-                            level={status.meters.appPeaks[source.id] ?? 0}
-                            inactive={!active}
-                            onGainChange={(gain) => updateAppSource(source.id, { gain })}
-                            onMutedChange={(muted) => updateAppSource(source.id, { muted })}
-                            onRemove={() => removeAppSource(source.id)}
-                          />
-                        );
-                      })
-                    ) : (
-                      <EmptySourceRow label={booting ? "Loading applications" : "No applications added"} />
-                    )}
-                  </div>
-                </div>
-              </section>
-
-              <aside className="grid min-h-0 min-w-0 grid-rows-[44px_minmax(0,1fr)] bg-[#0d1214]">
-                <div className="panel-heading">
-                  <div className="flex items-center gap-2">
-                    <PanelRight className="h-4 w-4 text-primary" />
-                    <h2 className="text-sm font-semibold uppercase text-muted-foreground">Output</h2>
-                  </div>
-                </div>
-
-                <div className="grid min-h-0 min-w-0 content-start gap-5 overflow-y-auto p-4">
-                  <DeviceSelect
-                    label="Virtual Mic"
-                    placeholder={booting ? "Loading devices" : "Select virtual mic"}
-                    devices={outputPickerDevices}
-                    value={config.outputDeviceId}
-                    onChange={(outputDeviceId) => applyTopologyConfig({ outputDeviceId })}
-                  />
-                  <p
-                    className={cn(
-                      "rounded-md border px-3 py-2 text-xs leading-5 text-muted-foreground",
-                      outputGuidanceWarns ? "border-accent/35 bg-accent/10" : "border-border bg-[#0d1214]",
-                    )}
-                  >
-                    {outputGuidance}
-                  </p>
-
-                  <div className="grid gap-3 border-y border-border py-4">
-                    <div className="flex items-center justify-between">
-                      <span className="text-xs font-semibold uppercase text-muted-foreground">Master</span>
-                      <span className="font-mono text-xs text-foreground">{formatGain(config.masterGain)}</span>
-                    </div>
-                    <Slider
-                      min={0}
-                      max={1.5}
-                      step={0.01}
-                      value={[config.masterGain]}
-                      onDoubleClick={() => applyControlsConfig({ masterGain: 1 })}
-                      onValueChange={(value) => applyControlsConfig({ masterGain: value[0] ?? config.masterGain })}
-                    />
-                    <LevelMeter value={status.meters.outputPeak} muted={!running} />
-                  </div>
-                </div>
-              </aside>
+              <OutputPanel
+                booting={booting}
+                running={running}
+                devices={outputPickerDevices}
+                outputDeviceId={config.outputDeviceId}
+                outputGuidance={outputGuidance}
+                outputGuidanceWarns={outputGuidanceWarns}
+                masterGain={config.masterGain}
+                outputPeak={status.meters.outputPeak}
+                onOutputDeviceChange={(outputDeviceId) => applyTopologyConfig({ outputDeviceId })}
+                onMasterGainChange={(masterGain) => applyControlsConfig({ masterGain })}
+              />
             </div>
-
           </main>
         </div>
+
         <SettingsDialog
           open={settingsOpen}
           config={draftConfig}
@@ -707,276 +511,4 @@ export default function App() {
       </TooltipProvider>
     </ToastProvider>
   );
-}
-
-type SourceOption = {
-  value: string;
-  label: string;
-  detail?: string;
-};
-
-type SourceSectionHeaderProps = {
-  icon: React.ReactNode;
-  title: string;
-  options: SourceOption[];
-  addDisabled: boolean;
-  addLabel: string;
-  onAdd: (value: string) => void;
-};
-
-function SourceSectionHeader({ icon, title, options, addDisabled, addLabel, onAdd }: SourceSectionHeaderProps) {
-  const [value, setValue] = useState("");
-
-  return (
-    <div className="flex h-12 min-w-0 items-center justify-between gap-3 border-b border-border bg-[#101619] px-4">
-      <div className="flex min-w-0 items-center gap-2">
-        {icon}
-        <h3 className="truncate text-xs font-semibold uppercase text-muted-foreground">{title}</h3>
-      </div>
-      <Select
-        value={value}
-        onValueChange={(next) => {
-          onAdd(next);
-          setValue("");
-        }}
-      >
-        <SelectTrigger className="h-8 w-[150px] min-w-0 px-2 text-xs" disabled={addDisabled}>
-          <Plus className="h-4 w-4 text-primary" />
-          <SelectValue placeholder={addLabel} />
-        </SelectTrigger>
-        <SelectContent className="w-[min(320px,calc(100vw-32px))]">
-          <SelectGroup>
-            <SelectLabel>{title}</SelectLabel>
-            {options.map((option) => (
-              <SelectItem key={option.value} value={option.value}>
-                <span className="grid min-w-0 max-w-full grid-cols-[minmax(0,1fr)_auto] items-center gap-2 overflow-hidden">
-                  <span className="block min-w-0 truncate" title={option.label}>
-                    {option.label}
-                  </span>
-                  {option.detail ? (
-                    <span className="block max-w-[96px] truncate text-xs text-muted-foreground" title={option.detail}>
-                      {option.detail}
-                    </span>
-                  ) : null}
-                </span>
-              </SelectItem>
-            ))}
-          </SelectGroup>
-        </SelectContent>
-      </Select>
-    </div>
-  );
-}
-
-function EmptySourceRow({ label }: { label: string }) {
-  return (
-    <div className="flex h-[72px] items-center border-b border-border px-4 text-sm text-muted-foreground">
-      <span>{label}</span>
-    </div>
-  );
-}
-
-type SettingsDialogProps = {
-  open: boolean;
-  config: AppConfig;
-  onOpenChange: (open: boolean) => void;
-  onConfigChange: (config: AppConfig) => void;
-  onSave: () => void;
-  onOpenSource: () => void;
-};
-
-type ShortcutField = keyof ShortcutConfig;
-
-const shortcutRows: Array<{ key: ShortcutField; label: string }> = [
-  { key: "micMute", label: "Mic mute" },
-  { key: "appMute", label: "App mute" },
-  { key: "routing", label: "Start / Stop" },
-];
-
-function SettingsDialog({ open, config, onOpenChange, onConfigChange, onSave, onOpenSource }: SettingsDialogProps) {
-  const [recording, setRecording] = useState<ShortcutField | null>(null);
-  const validation = settingsValidationError(config.shortcuts);
-
-  useEffect(() => {
-    if (!open) {
-      setRecording(null);
-    }
-  }, [open]);
-
-  useEffect(() => {
-    if (!recording) {
-      return undefined;
-    }
-
-    const onKeyDown = (event: KeyboardEvent) => {
-      event.preventDefault();
-      event.stopPropagation();
-
-      if (event.key === "Escape") {
-        setRecording(null);
-        return;
-      }
-
-      const shortcut = shortcutFromEvent(event);
-      if (!shortcut) {
-        return;
-      }
-
-      onConfigChange({
-        ...config,
-        shortcuts: {
-          ...config.shortcuts,
-          [recording]: shortcut,
-        },
-      });
-      setRecording(null);
-    };
-
-    window.addEventListener("keydown", onKeyDown, true);
-    return () => window.removeEventListener("keydown", onKeyDown, true);
-  }, [config, onConfigChange, recording]);
-
-  const setChecked = (key: "startWithWindows" | "minimizeToTray", checked: boolean) => {
-    onConfigChange({ ...config, [key]: checked });
-  };
-
-  return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent>
-        <DialogHeader>
-          <DialogTitle>Settings</DialogTitle>
-          <DialogDescription>Configure shortcuts and startup behavior.</DialogDescription>
-        </DialogHeader>
-
-        <div className="grid max-h-[calc(100vh-220px)] gap-5 overflow-y-auto px-5 py-5">
-          <section className="grid gap-3">
-            <div>
-              <h3 className="text-xs font-semibold uppercase text-muted-foreground">Shortcuts</h3>
-            </div>
-            <div className="grid gap-2">
-              {shortcutRows.map((row) => (
-                <div key={row.key} className="grid grid-cols-[140px_minmax(0,1fr)_96px] items-center gap-3 rounded-md border border-border bg-[#0d1214] px-3 py-2">
-                  <span className="text-sm text-foreground">{row.label}</span>
-                  <kbd className="min-w-0 truncate rounded border border-border bg-[#070b0d] px-2 py-1.5 font-mono text-xs text-foreground">
-                    {recording === row.key ? "Recording..." : config.shortcuts[row.key]}
-                  </kbd>
-                  <Button type="button" variant="ghost" size="sm" onClick={() => setRecording(row.key)}>
-                    Record
-                  </Button>
-                </div>
-              ))}
-            </div>
-            {validation ? <p className="text-xs text-destructive">{validation}</p> : null}
-          </section>
-
-          <section className="grid gap-2">
-            <h3 className="text-xs font-semibold uppercase text-muted-foreground">Startup</h3>
-            <CheckboxRow
-              label="Start with Windows"
-              checked={config.startWithWindows}
-              onCheckedChange={(checked) => setChecked("startWithWindows", checked)}
-            />
-            <CheckboxRow
-              label="Minimize to tray"
-              checked={config.minimizeToTray}
-              onCheckedChange={(checked) => setChecked("minimizeToTray", checked)}
-            />
-          </section>
-        </div>
-
-        <DialogFooter className="justify-between">
-          <Button type="button" variant="quiet" size="sm" onClick={onOpenSource}>
-            <Github className="h-4 w-4" />
-            GitHub
-          </Button>
-          <div className="flex items-center gap-2">
-            <Button type="button" variant="quiet" onClick={() => onOpenChange(false)}>
-              Cancel
-            </Button>
-            <Button type="button" disabled={Boolean(validation)} onClick={onSave}>
-              Save
-            </Button>
-          </div>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
-  );
-}
-
-function CheckboxRow({ label, checked, onCheckedChange }: { label: string; checked: boolean; onCheckedChange: (checked: boolean) => void }) {
-  return (
-    <label className="flex h-11 cursor-pointer items-center justify-between gap-3 rounded-md border border-border bg-[#0d1214] px-3 text-sm text-foreground">
-      <span>{label}</span>
-      <input
-        type="checkbox"
-        checked={checked}
-        onChange={(event) => onCheckedChange(event.currentTarget.checked)}
-        className="h-4 w-4 accent-primary"
-      />
-    </label>
-  );
-}
-
-function cloneAppConfig(config: AppConfig): AppConfig {
-  return {
-    ...config,
-    micSources: config.micSources.map((source) => ({ ...source })),
-    appSources: config.appSources.map((source) => ({ ...source })),
-    shortcuts: { ...config.shortcuts },
-  };
-}
-
-function settingsValidationError(shortcuts: ShortcutConfig) {
-  const values = [shortcuts.micMute, shortcuts.appMute, shortcuts.routing].map((shortcut) => shortcut.trim());
-  if (values.some((shortcut) => !shortcut)) {
-    return "Shortcut fields cannot be empty.";
-  }
-
-  const normalized = values.map((shortcut) => shortcut.toLowerCase());
-  if (new Set(normalized).size !== normalized.length) {
-    return "Each shortcut must be unique.";
-  }
-
-  return "";
-}
-
-function shortcutFromEvent(event: KeyboardEvent) {
-  const key = shortcutKeyName(event.key);
-  if (!key || key === "Ctrl" || key === "Alt" || key === "Shift") {
-    return "";
-  }
-
-  const parts = [];
-  if (event.ctrlKey) {
-    parts.push("Ctrl");
-  }
-  if (event.altKey) {
-    parts.push("Alt");
-  }
-  if (event.shiftKey) {
-    parts.push("Shift");
-  }
-  if (!parts.length) {
-    return "";
-  }
-  parts.push(key);
-  return parts.join("+");
-}
-
-function shortcutKeyName(key: string) {
-  if (key.length === 1) {
-    return key.toUpperCase();
-  }
-
-  const normalized = key.trim();
-  if (!normalized) {
-    return "";
-  }
-  if (normalized === "Control") {
-    return "Ctrl";
-  }
-  if (normalized === " ") {
-    return "Space";
-  }
-  return normalized;
 }

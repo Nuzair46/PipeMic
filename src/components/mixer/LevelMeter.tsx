@@ -8,6 +8,8 @@ type LevelMeterProps = {
 };
 
 const METER_FLOOR_DB = -50;
+const REGULAR_SEGMENTS = 28;
+const COMPACT_SEGMENTS = 18;
 
 function clampMeterValue(value: number) {
   return Math.max(0, Math.min(1, Number.isFinite(value) ? value : 0));
@@ -28,11 +30,15 @@ export function LevelMeter({ value, muted = false, compact = false, className }:
   const visualLevel = muted ? 0 : visualMeterLevel(normalized);
   const warn = normalized > 0.82;
   const danger = normalized > 0.96;
+  const segmentCount = compact ? COMPACT_SEGMENTS : REGULAR_SEGMENTS;
+  const activeSegments = Math.ceil(visualLevel * segmentCount);
+  const clipStart = Math.max(0, segmentCount - 2);
 
   return (
     <div
       className={cn(
-        "meter-grid relative overflow-hidden rounded-sm border border-border bg-[#060a0c] shadow-meter",
+        "relative grid overflow-hidden rounded-sm border bg-background p-[3px] shadow-meter transition-colors duration-75",
+        danger ? "border-destructive/70" : warn ? "border-foreground/35" : "border-border",
         compact ? "h-3" : "h-7",
         className,
       )}
@@ -42,18 +48,24 @@ export function LevelMeter({ value, muted = false, compact = false, className }:
       aria-valuemax={100}
       aria-valuenow={Math.round(visualLevel * 100)}
     >
-      <div
-        className={cn(
-          "absolute inset-y-0 left-0 transition-[width,background-color] duration-75 ease-out",
-          muted && "bg-muted-foreground/20",
-          !muted && !warn && "bg-primary",
-          !muted && warn && !danger && "bg-accent",
-          !muted && danger && "bg-destructive",
-        )}
-        style={{ width: `${visualLevel * 100}%` }}
-      />
-      <div className="absolute inset-y-0 right-[18%] w-px bg-accent/55" />
-      <div className="absolute inset-y-0 right-[4%] w-px bg-destructive/65" />
+      <div className="grid h-full min-w-0 grid-flow-col gap-[3px]">
+        {Array.from({ length: segmentCount }, (_, index) => {
+          const active = index < activeSegments;
+          const clippingSegment = danger && index >= clipStart;
+
+          return (
+            <span
+              key={index}
+              className={cn(
+                "min-w-0 rounded-[1px] transition-colors duration-75 ease-out",
+                active ? "bg-foreground" : "bg-muted/65",
+                active && warn && "bg-foreground/80",
+                active && clippingSegment && "bg-destructive",
+              )}
+            />
+          );
+        })}
+      </div>
     </div>
   );
 }

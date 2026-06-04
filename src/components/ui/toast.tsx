@@ -36,7 +36,7 @@ export function ToastStack({ toasts, onDismiss }: ToastStackProps) {
               }
             }}
             className={cn(
-              "relative grid w-full grid-cols-[32px_minmax(0,1fr)_28px] items-start gap-3 overflow-hidden rounded-md border bg-[#101619]/[0.98] p-3.5 pr-3 shadow-[0_18px_52px_rgba(0,0,0,0.42)] backdrop-blur-sm data-[swipe=move]:translate-x-[var(--radix-toast-swipe-move-x)] data-[swipe=end]:animate-out data-[swipe=end]:translate-x-[var(--radix-toast-swipe-end-x)]",
+              "relative grid w-full grid-cols-[32px_minmax(0,1fr)_28px] items-start gap-3 overflow-hidden rounded-md border bg-background p-3.5 pr-3 shadow-[0_18px_52px_rgba(0,0,0,0.42)] data-[swipe=move]:translate-x-[var(--radix-toast-swipe-move-x)] data-[swipe=end]:animate-out data-[swipe=end]:translate-x-[var(--radix-toast-swipe-end-x)]",
               tone === "fail" && "border-destructive/45",
               tone === "warn" && "border-accent/45",
               tone === "success" && "border-primary/45",
