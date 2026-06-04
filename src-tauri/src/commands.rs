@@ -40,6 +40,10 @@ impl PipeMicState {
         self.config.lock().clone()
     }
 
+    fn stop_routing(&self) {
+        self.engine.lock().stop();
+    }
+
     fn should_hide_on_close(&self) -> bool {
         self.config.lock().minimize_to_tray && !self.quit_requested.load(Ordering::SeqCst)
     }
@@ -110,6 +114,8 @@ pub fn handle_window_event(window: &tauri::Window, event: &tauri::WindowEvent) {
         if state.should_hide_on_close() {
             api.prevent_close();
             let _ = window.hide();
+        } else {
+            state.stop_routing();
         }
     }
 }
@@ -250,6 +256,7 @@ fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
             TRAY_QUIT_ID => {
                 if let Some(state) = app.try_state::<PipeMicState>() {
                     state.request_quit();
+                    state.stop_routing();
                 }
                 app.exit(0);
             }

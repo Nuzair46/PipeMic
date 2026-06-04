@@ -19,6 +19,14 @@ pub enum SessionState {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+pub enum AppDiscoverySource {
+    AudioSession,
+    Window,
+    Merged,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub enum RouteState {
     Stopped,
     Running,
@@ -48,6 +56,9 @@ pub struct AudioSession {
     pub process_id: u32,
     pub state: SessionState,
     pub is_excluded_default: bool,
+    pub window_title: Option<String>,
+    pub has_audio_session: bool,
+    pub discovery_source: AppDiscoverySource,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

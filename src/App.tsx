@@ -95,6 +95,27 @@ function sessionForExecutable(sessions: AudioSession[], executable: string) {
   return matches.find((session) => session.state === "active") ?? matches[0] ?? null;
 }
 
+function executableLabel(executable: string) {
+  return executable.replace(/\.exe$/i, "");
+}
+
+function sessionDisplayLabel(session: AudioSession) {
+  const title = session.windowTitle?.trim();
+  if (title) {
+    return title;
+  }
+
+  return session.displayName || executableLabel(session.executable);
+}
+
+function sourceDisplayLabel(source: AppSourceConfig, session: AudioSession | null) {
+  return session ? sessionDisplayLabel(session) : source.displayName ?? executableLabel(source.executable);
+}
+
+function savedDisplayName(session: AudioSession) {
+  return session.displayName || executableLabel(session.executable);
+}
+
 function uniqueSessionsByExecutable(sessions: AudioSession[]) {
   const seen = new Set<string>();
   return sessions.filter((session) => {
@@ -349,11 +370,18 @@ export default function App() {
       void api.getStatus().then(setStatus).catch((error) => {
         pushToast("Could not read routing status", error instanceof Error ? error.message : String(error), "fail");
       });
-      void api.listSessions().then(setSessions).catch(() => undefined);
-    }, isRunning(status) ? 220 : 1200);
+    }, isRunning(status) ? 80 : 1000);
 
     return () => window.clearInterval(timer);
   }, [pushToast, status]);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      void api.listSessions().then(setSessions).catch(() => undefined);
+    }, 1200);
+
+    return () => window.clearInterval(timer);
+  }, []);
 
   const start = useCallback(async () => {
     try {
@@ -470,7 +498,7 @@ export default function App() {
           {
             id: appSourceId(session.executable),
             executable: session.executable,
-            displayName: session.displayName,
+            displayName: savedDisplayName(session),
             gain: 1,
             muted: false,
           },
@@ -589,7 +617,7 @@ export default function App() {
                     onAdd={addAppSource}
                     options={availableAppSessions.map((session) => ({
                       value: session.id,
-                      label: session.displayName || session.executable.replace(/\.exe$/i, ""),
+                      label: sessionDisplayLabel(session),
                       detail: session.executable,
                     }))}
                   />
@@ -602,7 +630,7 @@ export default function App() {
                           <SourceStrip
                             key={source.id}
                             kind="app"
-                            title={source.displayName ?? session?.displayName ?? source.executable.replace(/\.exe$/i, "")}
+                            title={sourceDisplayLabel(source, session)}
                             detail={undefined}
                             gain={source.gain}
                             muted={source.muted}
@@ -716,14 +744,20 @@ function SourceSectionHeader({ icon, title, options, addDisabled, addLabel, onAd
           <Plus className="h-4 w-4 text-primary" />
           <SelectValue placeholder={addLabel} />
         </SelectTrigger>
-        <SelectContent>
+        <SelectContent className="w-[min(320px,calc(100vw-32px))]">
           <SelectGroup>
             <SelectLabel>{title}</SelectLabel>
             {options.map((option) => (
               <SelectItem key={option.value} value={option.value}>
-                <span className="flex min-w-0 items-center gap-2">
-                  <span className="min-w-0 truncate">{option.label}</span>
-                  {option.detail ? <span className="shrink-0 text-xs text-muted-foreground">{option.detail}</span> : null}
+                <span className="grid min-w-0 max-w-full grid-cols-[minmax(0,1fr)_auto] items-center gap-2 overflow-hidden">
+                  <span className="block min-w-0 truncate" title={option.label}>
+                    {option.label}
+                  </span>
+                  {option.detail ? (
+                    <span className="block max-w-[96px] truncate text-xs text-muted-foreground" title={option.detail}>
+                      {option.detail}
+                    </span>
+                  ) : null}
                 </span>
               </SelectItem>
             ))}

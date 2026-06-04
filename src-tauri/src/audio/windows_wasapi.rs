@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use windows::{
     Win32::{
         Devices::FunctionDiscovery::PKEY_Device_FriendlyName,
-        Foundation::{CloseHandle, HANDLE},
+        Foundation::{BOOL, CloseHandle, HANDLE, HWND, LPARAM},
         Media::Audio::{
             AudioSessionStateActive, AudioSessionStateExpired, AudioSessionStateInactive,
             DEVICE_STATE_ACTIVE, EDataFlow, IAudioClient, IAudioSessionControl2,
@@ -22,14 +22,28 @@ use windows::{
                 QueryFullProcessImageNameW,
             },
         },
+        UI::WindowsAndMessaging::{
+            EnumWindows, GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId,
+            IsWindowVisible,
+        },
     },
     core::{Interface, PWSTR},
 };
 
 use super::{
     AudioResult,
-    types::{AudioDevice, AudioSession, DeviceFlow, SessionState, is_virtual_cable_name},
+    types::{
+        AppDiscoverySource, AudioDevice, AudioSession, DeviceFlow, SessionState,
+        is_virtual_cable_name,
+    },
 };
+
+#[derive(Debug, Clone)]
+struct WindowAppCandidate {
+    title: String,
+    executable: String,
+    process_id: u32,
+}
 
 pub fn list_devices(flow: DeviceFlow) -> AudioResult<Vec<AudioDevice>> {
     init_com();
@@ -122,8 +136,29 @@ pub fn list_sessions() -> AudioResult<Vec<AudioSession>> {
                     process_id,
                     state,
                     is_excluded_default: false,
+                    window_title: None,
+                    has_audio_session: true,
+                    discovery_source: AppDiscoverySource::AudioSession,
                 });
             }
+        }
+
+        for window in visible_app_windows() {
+            sessions.push(AudioSession {
+                id: format!(
+                    "window:{}:{}",
+                    window.executable.to_ascii_lowercase(),
+                    window.process_id
+                ),
+                display_name: window.executable.trim_end_matches(".exe").to_string(),
+                executable: window.executable,
+                process_id: window.process_id,
+                state: SessionState::Inactive,
+                is_excluded_default: false,
+                window_title: Some(window.title),
+                has_audio_session: false,
+                discovery_source: AppDiscoverySource::Window,
+            });
         }
 
         sessions.sort_by(|left, right| {
@@ -136,6 +171,60 @@ pub fn list_sessions() -> AudioResult<Vec<AudioSession>> {
 
         Ok(sessions)
     }
+}
+
+unsafe fn visible_app_windows() -> Vec<WindowAppCandidate> {
+    let mut windows = Vec::new();
+    let lparam = LPARAM(&mut windows as *mut Vec<WindowAppCandidate> as isize);
+    let _ = EnumWindows(Some(collect_visible_app_window), lparam);
+    windows
+}
+
+unsafe extern "system" fn collect_visible_app_window(hwnd: HWND, lparam: LPARAM) -> BOOL {
+    if let Some(window) = visible_app_window(hwnd) {
+        let windows = &mut *(lparam.0 as *mut Vec<WindowAppCandidate>);
+        windows.push(window);
+    }
+
+    BOOL(1)
+}
+
+unsafe fn visible_app_window(hwnd: HWND) -> Option<WindowAppCandidate> {
+    if !IsWindowVisible(hwnd).as_bool() {
+        return None;
+    }
+
+    let title = window_title(hwnd)?;
+    let mut process_id = 0;
+    GetWindowThreadProcessId(hwnd, Some(&mut process_id));
+    if process_id == 0 {
+        return None;
+    }
+
+    let executable = process_executable(process_id)?;
+    Some(WindowAppCandidate {
+        title,
+        executable,
+        process_id,
+    })
+}
+
+unsafe fn window_title(hwnd: HWND) -> Option<String> {
+    let length = GetWindowTextLengthW(hwnd);
+    if length <= 0 {
+        return None;
+    }
+
+    let mut buffer = vec![0u16; length as usize + 1];
+    let written = GetWindowTextW(hwnd, &mut buffer);
+    if written <= 0 {
+        return None;
+    }
+
+    let title = String::from_utf16_lossy(&buffer[..written as usize])
+        .trim()
+        .to_string();
+    (!title.is_empty()).then_some(title)
 }
 
 pub(crate) fn init_com() {

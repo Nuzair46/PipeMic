@@ -33,7 +33,7 @@ export function SourceStrip({
   const Icon = kind === "mic" ? Mic : Volume2;
 
   return (
-    <div className="grid h-[96px] grid-cols-[minmax(0,1fr)_210px_84px] items-center gap-4 border-b border-border px-4 last:border-b-0">
+    <div className="grid h-[96px] min-w-0 grid-cols-[minmax(0,1fr)_minmax(150px,210px)_84px] items-center gap-4 overflow-hidden border-b border-border px-4 last:border-b-0">
       <div className="grid min-w-0 grid-cols-[36px_minmax(0,1fr)] gap-3">
         <Tooltip>
           <TooltipTrigger asChild>
@@ -51,15 +51,21 @@ export function SourceStrip({
           <TooltipContent>{muted ? "Unmute" : "Mute"}</TooltipContent>
         </Tooltip>
         <div className="min-w-0">
-          <div className="flex items-center gap-2">
-            <h3 className="truncate text-sm font-semibold text-foreground">{title}</h3>
+          <div className="flex min-w-0 items-center gap-2">
+            <h3 className="min-w-0 truncate text-sm font-semibold text-foreground" title={title}>
+              {title}
+            </h3>
           </div>
-          {detail ? <p className="mt-1 truncate text-xs text-muted-foreground">{detail}</p> : null}
+          {detail ? (
+            <p className="mt-1 truncate text-xs text-muted-foreground" title={detail}>
+              {detail}
+            </p>
+          ) : null}
           <LevelMeter className={detail ? "mt-3" : "mt-5"} value={level} muted={muted || inactive} />
         </div>
       </div>
 
-      <div className="grid gap-2">
+      <div className="grid min-w-0 gap-2">
         <div className="flex items-center justify-between text-xs text-muted-foreground">
           <span>Gain</span>
           <span className="font-mono text-foreground">{formatGain(gain)}</span>

@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 export type DeviceFlow = "capture" | "render";
 export type RouteState = "stopped" | "running" | "deviceMissing" | "appInactive" | "captureFailed";
 export type SessionState = "active" | "inactive" | "expired";
+export type AppDiscoverySource = "audioSession" | "window" | "merged";
 
 export interface AudioDevice {
   id: string;
@@ -21,6 +22,9 @@ export interface AudioSession {
   processId: number;
   state: SessionState;
   isExcludedDefault: boolean;
+  windowTitle?: string | null;
+  hasAudioSession: boolean;
+  discoverySource: AppDiscoverySource;
 }
 
 export interface MicSourceConfig {
@@ -223,6 +227,9 @@ const mockSessions: AudioSession[] = [
     processId: 4242,
     state: "active",
     isExcludedDefault: false,
+    windowTitle: null,
+    hasAudioSession: true,
+    discoverySource: "audioSession",
   },
   {
     id: "session:game:9920",
@@ -231,6 +238,9 @@ const mockSessions: AudioSession[] = [
     processId: 9920,
     state: "active",
     isExcludedDefault: false,
+    windowTitle: null,
+    hasAudioSession: true,
+    discoverySource: "audioSession",
   },
   {
     id: "session:discord:1840",
@@ -239,6 +249,9 @@ const mockSessions: AudioSession[] = [
     processId: 1840,
     state: "active",
     isExcludedDefault: false,
+    windowTitle: null,
+    hasAudioSession: true,
+    discoverySource: "audioSession",
   },
   {
     id: "session:vrchat:2884",
@@ -247,6 +260,20 @@ const mockSessions: AudioSession[] = [
     processId: 2884,
     state: "active",
     isExcludedDefault: false,
+    windowTitle: null,
+    hasAudioSession: true,
+    discoverySource: "audioSession",
+  },
+  {
+    id: "window:firefox:7332",
+    displayName: "firefox",
+    executable: "firefox.exe",
+    processId: 7332,
+    state: "inactive",
+    isExcludedDefault: false,
+    windowTitle: "YouTube - Mozilla Firefox",
+    hasAudioSession: false,
+    discoverySource: "window",
   },
   {
     id: "session:pipemic:1112",
@@ -255,6 +282,9 @@ const mockSessions: AudioSession[] = [
     processId: 1112,
     state: "active",
     isExcludedDefault: false,
+    windowTitle: null,
+    hasAudioSession: true,
+    discoverySource: "audioSession",
   },
   {
     id: "session:system:0",
@@ -263,6 +293,9 @@ const mockSessions: AudioSession[] = [
     processId: 0,
     state: "active",
     isExcludedDefault: false,
+    windowTitle: null,
+    hasAudioSession: true,
+    discoverySource: "audioSession",
   },
   {
     id: "session:expired:88",
@@ -271,6 +304,9 @@ const mockSessions: AudioSession[] = [
     processId: 88,
     state: "expired",
     isExcludedDefault: false,
+    windowTitle: null,
+    hasAudioSession: true,
+    discoverySource: "audioSession",
   },
 ];
 

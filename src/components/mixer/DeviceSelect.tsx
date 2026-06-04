@@ -35,7 +35,7 @@ export function DeviceSelect({ label, value, placeholder, devices, onChange }: D
         <SelectTrigger className="min-w-0 overflow-hidden [&>span]:min-w-0 [&>span]:overflow-hidden [&>span]:truncate">
           <SelectValue placeholder={placeholder} />
         </SelectTrigger>
-        <SelectContent>
+        <SelectContent className="w-[420px] max-w-[calc(100vw-32px)]">
           {likelyCable.length ? (
             <SelectGroup>
               <SelectLabel>Virtual Cable</SelectLabel>
@@ -43,7 +43,9 @@ export function DeviceSelect({ label, value, placeholder, devices, onChange }: D
                 <SelectItem key={device.id} value={device.id}>
                   <span className="flex min-w-0 max-w-full items-center gap-2">
                     <Cable className="h-4 w-4 shrink-0 text-primary" />
-                    <span className="min-w-0 truncate">{device.name}</span>
+                    <span className="min-w-0 truncate" title={device.name}>
+                      {device.name}
+                    </span>
                   </span>
                 </SelectItem>
               ))}
@@ -60,7 +62,9 @@ export function DeviceSelect({ label, value, placeholder, devices, onChange }: D
                   ) : (
                     <MonitorSpeaker className="h-4 w-4 shrink-0 text-muted-foreground" />
                   )}
-                  <span className="min-w-0 truncate">{device.name}</span>
+                  <span className="min-w-0 truncate" title={device.name}>
+                    {device.name}
+                  </span>
                   {device.isDefault ? <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-accent" /> : null}
                 </span>
               </SelectItem>
