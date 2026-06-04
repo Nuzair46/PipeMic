@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   api,
   appSourceId,
+  initialUpdateCheck,
   isRunning,
   isVbCableDevice,
   micSourceId,
@@ -14,6 +15,7 @@ import {
   type ControlUpdate,
   type MicSourceConfig,
   type RouteStatus,
+  type UpdateCheckResult,
 } from "@/lib/api";
 import { AppHeader } from "@/components/app/AppHeader";
 import { OutputPanel } from "@/components/app/OutputPanel";
@@ -79,6 +81,7 @@ export default function App() {
   const [toasts, setToasts] = useState<AppToast[]>([]);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [draftConfig, setDraftConfig] = useState<AppConfig>(defaultConfig);
+  const [updateCheck, setUpdateCheck] = useState<UpdateCheckResult>(initialUpdateCheck);
 
   const configRef = useRef(config);
   const statusRef = useRef(status);
@@ -100,6 +103,19 @@ export default function App() {
 
   const dismissToast = useCallback((id: number) => {
     setToasts((current) => current.filter((toast) => toast.id !== id));
+  }, []);
+
+  useEffect(() => {
+    let alive = true;
+    void api.checkForUpdate().then((next) => {
+      if (alive) {
+        setUpdateCheck(next);
+      }
+    });
+
+    return () => {
+      alive = false;
+    };
   }, []);
 
   const running = isRunning(status);
@@ -290,7 +306,7 @@ export default function App() {
     return () => {
       alive = false;
     };
-  }, [pushToast]);
+  }, [pushToast, saveConfig]);
 
   useEffect(() => {
     if (!booting) {
@@ -458,12 +474,26 @@ export default function App() {
     });
   }, [pushToast]);
 
+  const openUpdate = useCallback(() => {
+    void api.openReleasesUrl(updateCheck.releaseUrl).catch((error) => {
+      pushToast("Could not open releases", error instanceof Error ? error.message : String(error), "fail");
+    });
+  }, [pushToast, updateCheck.releaseUrl]);
+
   return (
     <ToastProvider swipeDirection="right">
       <TooltipProvider delayDuration={150}>
         <div className="h-screen overflow-hidden bg-background p-5">
           <main className="mx-auto grid h-[calc(100vh-40px)] min-h-[560px] max-w-[1240px] grid-rows-[64px_minmax(0,1fr)] overflow-hidden rounded-lg border border-border bg-background shadow-[0_20px_64px_rgba(0,0,0,0.42)]">
-            <AppHeader running={running} canStart={canStart} onStart={start} onStop={stop} onSettings={openSettings} />
+            <AppHeader
+              running={running}
+              canStart={canStart}
+              update={updateCheck}
+              onStart={start}
+              onStop={stop}
+              onSettings={openSettings}
+              onOpenUpdate={openUpdate}
+            />
 
             <div className="grid min-h-0 grid-cols-[minmax(0,2fr)_minmax(280px,1fr)]">
               <SourcesPanel

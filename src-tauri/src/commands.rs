@@ -18,6 +18,7 @@ use crate::{
 };
 
 const SOURCE_URL: &str = "https://github.com/nuzair46/pipemic";
+const RELEASES_URL: &str = "https://github.com/nuzair46/pipemic/releases";
 const TRAY_SHOW_ID: &str = "show";
 const TRAY_QUIT_ID: &str = "quit";
 
@@ -195,6 +196,15 @@ pub fn update_controls(
 #[tauri::command]
 pub fn open_source_url() -> CommandResult<()> {
     open_url(SOURCE_URL).map_err(|message| CommandError { message })
+}
+
+#[tauri::command]
+pub fn open_releases_url(url: Option<String>) -> CommandResult<()> {
+    let target = url
+        .as_deref()
+        .filter(|value| value.starts_with(RELEASES_URL))
+        .unwrap_or(RELEASES_URL);
+    open_url(target).map_err(|message| CommandError { message })
 }
 
 #[cfg(windows)]

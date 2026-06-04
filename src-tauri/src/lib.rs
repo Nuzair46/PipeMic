@@ -30,7 +30,8 @@ pub fn run() {
             commands::stop_routing,
             commands::get_status,
             commands::update_controls,
-            commands::open_source_url
+            commands::open_source_url,
+            commands::open_releases_url
         ])
         .run(tauri::generate_context!())
         .expect("failed to run PipeMic");
