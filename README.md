@@ -4,7 +4,7 @@
   <h5 align="center">Built for Windows stream, call, and voice-chat setups that need a controllable mixed mic feed</h5>
   <p align="center">
     <a href="https://github.com/Nuzair46/PipeMic/releases">
-      <img src="src-tauri/icons/icon.svg" alt="PipeMic logo" width="180" />
+      <img src="src-tauri/icons/icon.png" alt="PipeMic logo" width="180" />
     </a>
   </p>
 </center>
