@@ -45,7 +45,8 @@
       },
       "nsis": {
         "installMode": "perMachine",
-        "installerHooks": "nsis/installer-hooks.nsh"
+        "installerHooks": "nsis/installer-hooks.nsh",
+        "template": "nsis/installer-template.nsi"
       }
     }
   }
