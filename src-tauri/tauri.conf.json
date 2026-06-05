@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "PipeMic",
-  "version": "1.6.0",
+  "version": "1.6.1",
   "identifier": "com.pipemic.desktop",
   "build": {
     "beforeDevCommand": "yarn dev",
