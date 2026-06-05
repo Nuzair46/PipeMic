@@ -20,6 +20,14 @@ pub struct ProcessLoopbackSpec {
     pub frames_per_buffer: usize,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CaptureDiagnostics {
+    pub zero_reads: usize,
+    pub short_reads: usize,
+    pub pending_overflows: usize,
+    pub errors: usize,
+}
+
 impl CaptureSpec {
     pub fn mic(device_id: impl Into<String>, frames_per_buffer: usize) -> Self {
         Self {
@@ -42,6 +50,10 @@ impl ProcessLoopbackSpec {
 
 pub trait AudioCapture {
     fn read_stereo(&mut self, output: &mut [StereoFrame]) -> AudioResult<usize>;
+
+    fn take_diagnostics(&mut self) -> CaptureDiagnostics {
+        CaptureDiagnostics::default()
+    }
 }
 
 #[cfg(windows)]

@@ -1,3 +1,5 @@
+use std::collections::VecDeque;
+
 use serde::{Deserialize, Serialize};
 
 pub const SAMPLE_RATE: u32 = 48_000;
@@ -32,6 +34,59 @@ impl Default for MixerControls {
 }
 
 pub type StereoFrame = [f32; 2];
+
+#[derive(Debug, Clone)]
+pub struct FrameSpillBuffer {
+    pending: VecDeque<StereoFrame>,
+    capacity: usize,
+    overflowed: usize,
+}
+
+impl FrameSpillBuffer {
+    pub fn new(capacity: usize) -> Self {
+        Self {
+            pending: VecDeque::with_capacity(capacity),
+            capacity: capacity.max(1),
+            overflowed: 0,
+        }
+    }
+
+    #[cfg(test)]
+    pub fn pending_len(&self) -> usize {
+        self.pending.len()
+    }
+
+    pub fn push_frames<I>(&mut self, frames: I)
+    where
+        I: IntoIterator<Item = StereoFrame>,
+    {
+        for frame in frames {
+            self.pending.push_back(frame);
+            while self.pending.len() > self.capacity {
+                self.pending.pop_front();
+                self.overflowed = self.overflowed.saturating_add(1);
+            }
+        }
+    }
+
+    pub fn drain_into(&mut self, output: &mut [StereoFrame]) -> usize {
+        let mut written = 0;
+        while written < output.len() {
+            let Some(frame) = self.pending.pop_front() else {
+                break;
+            };
+            output[written] = frame;
+            written += 1;
+        }
+        written
+    }
+
+    pub fn take_overflowed(&mut self) -> usize {
+        let overflowed = self.overflowed;
+        self.overflowed = 0;
+        overflowed
+    }
+}
 
 #[derive(Debug, Clone, Copy)]
 pub struct SourceMix<'a> {
@@ -166,5 +221,42 @@ mod tests {
         );
 
         assert_eq!(mixed, [[0.5, 0.5]]);
+    }
+
+    #[test]
+    fn spill_buffer_preserves_oversized_packet_remainder() {
+        let packet = [[0.1, 0.2], [0.3, 0.4], [0.5, 0.6]];
+        let mut spill = FrameSpillBuffer::new(4);
+        let mut output = [[0.0, 0.0]; 2];
+        let copied = output.len().min(packet.len());
+
+        output[..copied].copy_from_slice(&packet[..copied]);
+        spill.push_frames(packet[copied..].iter().copied());
+
+        assert_eq!(output, [[0.1, 0.2], [0.3, 0.4]]);
+        assert_eq!(spill.pending_len(), 1);
+
+        let mut next_output = [[0.0, 0.0]; 2];
+        let drained = spill.drain_into(&mut next_output);
+
+        assert_eq!(drained, 1);
+        assert_eq!(next_output[0], [0.5, 0.6]);
+        assert_eq!(spill.pending_len(), 0);
+        assert_eq!(spill.take_overflowed(), 0);
+    }
+
+    #[test]
+    fn spill_buffer_caps_pending_frames_by_dropping_oldest() {
+        let mut spill = FrameSpillBuffer::new(2);
+        spill.push_frames([[1.0, 1.0], [2.0, 2.0], [3.0, 3.0]]);
+
+        assert_eq!(spill.pending_len(), 2);
+        assert_eq!(spill.take_overflowed(), 1);
+
+        let mut output = [[0.0, 0.0]; 2];
+        let drained = spill.drain_into(&mut output);
+
+        assert_eq!(drained, 2);
+        assert_eq!(output, [[2.0, 2.0], [3.0, 3.0]]);
     }
 }

@@ -28,8 +28,8 @@ use windows::{
 
 use super::{
     AudioError, AudioResult,
-    capture::{AudioCapture, CaptureSpec, ProcessLoopbackSpec},
-    mixer::{SAMPLE_RATE, StereoFrame},
+    capture::{AudioCapture, CaptureDiagnostics, CaptureSpec, ProcessLoopbackSpec},
+    mixer::{FrameSpillBuffer, SAMPLE_RATE, StereoFrame},
     render::{AudioRender, RenderSpec},
     windows_wasapi,
 };
@@ -65,6 +65,8 @@ pub(crate) struct WasapiCapture {
     client: IAudioClient,
     capture: IAudioCaptureClient,
     format: StreamFormat,
+    pending: FrameSpillBuffer,
+    diagnostics: CaptureDiagnostics,
 }
 
 pub(crate) struct WasapiRender {
@@ -78,21 +80,27 @@ pub(crate) struct WasapiRender {
 pub(crate) fn open_capture(spec: &CaptureSpec) -> AudioResult<Box<dyn AudioCapture>> {
     unsafe {
         windows_wasapi::init_com();
-        let client = windows_wasapi::audio_client_for_endpoint_id(&spec.device_id)?;
-        let format = initialize_client(
-            &client,
-            desired_float_stereo(),
-            spec.frames_per_buffer,
-            stream_flags(),
-        )?;
-        let capture = client.GetService::<IAudioCaptureClient>()?;
-        client.Start()?;
+        let (client, format) =
+            initialize_capture_client(&spec.device_id, spec.frames_per_buffer)?;
+        let capture = client.GetService::<IAudioCaptureClient>().map_err(|error| {
+            AudioError::CaptureFailed(format!(
+                "microphone GetService(IAudioCaptureClient) failed: {}",
+                windows_error_detail(&error)
+            ))
+        })?;
+        client.Start().map_err(|error| {
+            AudioError::CaptureFailed(format!(
+                "microphone Start failed: {}",
+                windows_error_detail(&error)
+            ))
+        })?;
 
-        Ok(Box::new(WasapiCapture {
+        Ok(Box::new(WasapiCapture::new(
             client,
             capture,
             format,
-        }))
+            spec.frames_per_buffer,
+        )))
     }
 }
 
@@ -118,11 +126,12 @@ pub(crate) fn open_process_loopback_capture(
             ))
         })?;
 
-        Ok(Box::new(WasapiCapture {
+        Ok(Box::new(WasapiCapture::new(
             client,
             capture,
             format,
-        }))
+            spec.frames_per_buffer,
+        )))
     }
 }
 
@@ -253,41 +262,134 @@ unsafe fn activate_process_loopback_client(process_id: u32) -> AudioResult<IAudi
     Ok(IAudioClient::from_raw(raw_client as _))
 }
 
+impl WasapiCapture {
+    fn new(
+        client: IAudioClient,
+        capture: IAudioCaptureClient,
+        format: StreamFormat,
+        frames_per_buffer: usize,
+    ) -> Self {
+        Self {
+            client,
+            capture,
+            format,
+            pending: FrameSpillBuffer::new(frames_per_buffer.saturating_mul(4)),
+            diagnostics: CaptureDiagnostics::default(),
+        }
+    }
+
+    fn record_read_shape(&mut self, written: usize, requested: usize) {
+        self.diagnostics.pending_overflows = self
+            .diagnostics
+            .pending_overflows
+            .saturating_add(self.pending.take_overflowed());
+
+        if requested == 0 {
+            return;
+        }
+
+        if written == 0 {
+            self.diagnostics.zero_reads = self.diagnostics.zero_reads.saturating_add(1);
+        } else if written < requested {
+            self.diagnostics.short_reads = self.diagnostics.short_reads.saturating_add(1);
+        }
+    }
+
+    fn record_capture_error(&mut self) {
+        self.diagnostics.errors = self.diagnostics.errors.saturating_add(1);
+    }
+}
+
 impl AudioCapture for WasapiCapture {
     fn read_stereo(&mut self, output: &mut [StereoFrame]) -> AudioResult<usize> {
         unsafe {
-            let mut written = 0;
-            let mut packet_frames = self.capture.GetNextPacketSize()?;
+            let requested = output.len();
+            if requested == 0 {
+                return Ok(0);
+            }
+
+            let mut written = self.pending.drain_into(output);
+            let mut packet_frames = if written < output.len() {
+                match self.capture.GetNextPacketSize() {
+                    Ok(frames) => frames,
+                    Err(error) => {
+                        self.record_capture_error();
+                        return Err(error.into());
+                    }
+                }
+            } else {
+                0
+            };
 
             while packet_frames > 0 && written < output.len() {
                 let mut data = ptr::null_mut();
                 let mut frames_to_read = 0;
                 let mut flags = 0;
-                self.capture
-                    .GetBuffer(&mut data, &mut frames_to_read, &mut flags, None, None)?;
+                if let Err(error) =
+                    self.capture
+                        .GetBuffer(&mut data, &mut frames_to_read, &mut flags, None, None)
+                {
+                    self.record_capture_error();
+                    return Err(error.into());
+                }
 
                 let available = frames_to_read as usize;
                 let copy_frames = available.min(output.len() - written);
+                let spill_frames = available.saturating_sub(copy_frames);
                 let silent = flags & AUDCLNT_BUFFERFLAGS_SILENT.0 as u32 != 0;
 
                 if silent || data.is_null() {
                     for frame in &mut output[written..written + copy_frames] {
                         *frame = [0.0, 0.0];
                     }
+                    if spill_frames > 0 {
+                        self.pending
+                            .push_frames(std::iter::repeat([0.0, 0.0]).take(spill_frames));
+                    }
                 } else {
+                    let format = self.format;
                     for frame_index in 0..copy_frames {
-                        output[written + frame_index] =
-                            read_stereo_frame(data, frame_index, self.format);
+                        output[written + frame_index] = read_stereo_frame(data, frame_index, format);
+                    }
+                    if spill_frames > 0 {
+                        self.pending.push_frames(
+                            (copy_frames..available)
+                                .map(|frame_index| read_stereo_frame(data, frame_index, format)),
+                        );
                     }
                 }
 
-                self.capture.ReleaseBuffer(frames_to_read)?;
+                if let Err(error) = self.capture.ReleaseBuffer(frames_to_read) {
+                    self.record_capture_error();
+                    return Err(error.into());
+                }
                 written += copy_frames;
-                packet_frames = self.capture.GetNextPacketSize()?;
+                if written >= output.len() {
+                    break;
+                }
+
+                packet_frames = match self.capture.GetNextPacketSize() {
+                    Ok(frames) => frames,
+                    Err(error) => {
+                        self.record_capture_error();
+                        return Err(error.into());
+                    }
+                };
             }
 
+            self.record_read_shape(written, requested);
             Ok(written)
         }
+    }
+
+    fn take_diagnostics(&mut self) -> CaptureDiagnostics {
+        self.diagnostics.pending_overflows = self
+            .diagnostics
+            .pending_overflows
+            .saturating_add(self.pending.take_overflowed());
+        let diagnostics = self.diagnostics;
+        self.diagnostics = CaptureDiagnostics::default();
+        diagnostics
     }
 }
 
@@ -328,48 +430,157 @@ impl Drop for WasapiRender {
     }
 }
 
-unsafe fn initialize_client(
-    client: &IAudioClient,
-    desired: WAVEFORMATEX,
+unsafe fn initialize_capture_client(
+    device_id: &str,
+    frames_per_buffer: usize,
+) -> AudioResult<(IAudioClient, StreamFormat)> {
+    let mut failures = Vec::new();
+    let desired = desired_float_stereo();
+
+    for (flags, label) in [(stream_flags(), "with conversion"), (0, "without conversion")] {
+        if let Some(result) = try_initialize_capture_format(
+            device_id,
+            &desired,
+            frames_per_buffer,
+            flags,
+            &format!("48 kHz float stereo {label}"),
+            &mut failures,
+        ) {
+            return Ok(result);
+        }
+    }
+
+    for (flags, label) in [(stream_flags(), "with conversion"), (0, "without conversion")] {
+        if let Some(result) = try_initialize_capture_mix_format(
+            device_id,
+            frames_per_buffer,
+            flags,
+            &format!("device mix format {label}"),
+            &mut failures,
+        ) {
+            return Ok(result);
+        }
+    }
+
+    Err(AudioError::CaptureFailed(capture_initialize_failure_message(
+        &failures,
+    )))
+}
+
+unsafe fn try_initialize_capture_format(
+    device_id: &str,
+    wave_format: &WAVEFORMATEX,
     frames_per_buffer: usize,
     flags: u32,
-) -> AudioResult<StreamFormat> {
-    let desired_supported = client
-        .IsFormatSupported(AUDCLNT_SHAREMODE_SHARED, &desired, None)
-        .0
-        == 0;
+    label: &str,
+    failures: &mut Vec<String>,
+) -> Option<(IAudioClient, StreamFormat)> {
+    let stream_format = match stream_format_from_wave(wave_format) {
+        Ok(format) => format,
+        Err(error) => {
+            failures.push(format!("{label}: {error}"));
+            return None;
+        }
+    };
 
-    if desired_supported {
-        let format = stream_format_from_wave(&desired)?;
-        client.Initialize(
+    for (duration, duration_label) in [
+        (
+            buffer_duration_hns(frames_per_buffer, stream_format.sample_rate),
+            "requested buffer",
+        ),
+        (0, "default buffer"),
+    ] {
+        let client = match windows_wasapi::audio_client_for_endpoint_id(device_id) {
+            Ok(client) => client,
+            Err(error) => {
+                failures.push(format!("{label}, {duration_label}: {error}"));
+                continue;
+            }
+        };
+
+        match client.Initialize(
             AUDCLNT_SHAREMODE_SHARED,
             flags,
-            buffer_duration_hns(frames_per_buffer, format.sample_rate),
+            duration,
             0,
-            &desired,
+            wave_format,
             None,
-        )?;
-        return Ok(format);
+        ) {
+            Ok(()) => return Some((client, stream_format)),
+            Err(error) => failures.push(format!(
+                "{label}, {duration_label}: {}",
+                windows_error_detail(&error)
+            )),
+        }
     }
 
-    let mix_format = client.GetMixFormat()?;
-    if mix_format.is_null() {
-        return Err(AudioError::CaptureFailed(
-            "WASAPI returned a null mix format".to_string(),
-        ));
+    None
+}
+
+unsafe fn try_initialize_capture_mix_format(
+    device_id: &str,
+    frames_per_buffer: usize,
+    flags: u32,
+    label: &str,
+    failures: &mut Vec<String>,
+) -> Option<(IAudioClient, StreamFormat)> {
+    for duration_label in ["requested buffer", "default buffer"] {
+        let client = match windows_wasapi::audio_client_for_endpoint_id(device_id) {
+            Ok(client) => client,
+            Err(error) => {
+                failures.push(format!("{label}, {duration_label}: {error}"));
+                continue;
+            }
+        };
+        let mix_format = match client.GetMixFormat() {
+            Ok(format) if !format.is_null() => format,
+            Ok(_) => {
+                failures.push(format!("{label}, {duration_label}: null mix format"));
+                continue;
+            }
+            Err(error) => {
+                failures.push(format!(
+                    "{label}, {duration_label}: GetMixFormat {}",
+                    windows_error_detail(&error)
+                ));
+                continue;
+            }
+        };
+
+        let stream_format = match stream_format_from_wave(&*mix_format) {
+            Ok(format) => format,
+            Err(error) => {
+                CoTaskMemFree(Some(mix_format as _));
+                failures.push(format!("{label}, {duration_label}: {error}"));
+                continue;
+            }
+        };
+        let duration = if duration_label == "requested buffer" {
+            buffer_duration_hns(frames_per_buffer, stream_format.sample_rate)
+        } else {
+            0
+        };
+
+        let initialized = client.Initialize(
+            AUDCLNT_SHAREMODE_SHARED,
+            flags,
+            duration,
+            0,
+            mix_format,
+            None,
+        );
+        CoTaskMemFree(Some(mix_format as _));
+
+        match initialized {
+            Ok(()) => return Some((client, stream_format)),
+            Err(error) => failures.push(format!(
+                "{label}, {duration_label}: {}",
+                windows_error_detail(&error)
+            )),
+        }
     }
 
-    let format = stream_format_from_wave(&*mix_format)?;
-    client.Initialize(
-        AUDCLNT_SHAREMODE_SHARED,
-        flags,
-        buffer_duration_hns(frames_per_buffer, format.sample_rate),
-        0,
-        mix_format,
-        None,
-    )?;
-    CoTaskMemFree(Some(mix_format as _));
-    Ok(format)
+    None
 }
 
 unsafe fn initialize_render_client(
@@ -540,6 +751,13 @@ fn render_initialize_failure_message(failures: &[String]) -> String {
 
     format!(
         "render Initialize failed for all formats: {}",
+        failures.join("; ")
+    )
+}
+
+fn capture_initialize_failure_message(failures: &[String]) -> String {
+    format!(
+        "microphone Initialize failed for all formats: {}",
         failures.join("; ")
     )
 }

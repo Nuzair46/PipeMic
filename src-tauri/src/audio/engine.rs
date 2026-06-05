@@ -26,11 +26,27 @@ use super::{
 };
 
 #[cfg(windows)]
+use super::capture::CaptureDiagnostics;
+#[cfg(windows)]
 use super::mixer::{self, SourceMix, StereoFrame};
 #[cfg(windows)]
 use super::{sessions, types::SessionState};
 
 const METER_DECAY_PER_SECOND: f32 = 2.8;
+#[cfg(windows)]
+const CAPTURE_PRESSURE_WARNING: &str =
+    "Microphone capture is falling behind; increase buffer size or close audio-heavy apps.";
+#[cfg(windows)]
+const OUTPUT_PRESSURE_WARNING: &str =
+    "Output device is not accepting audio quickly enough; close apps using the virtual mic or increase buffer size.";
+#[cfg(windows)]
+const PRESSURE_WARNING_COOLDOWN: Duration = Duration::from_secs(15);
+#[cfg(windows)]
+const CAPTURE_PRESSURE_WINDOW: Duration = Duration::from_secs(5);
+#[cfg(windows)]
+const CAPTURE_PRESSURE_WARNING_THRESHOLD: usize = 1;
+#[cfg(windows)]
+const OUTPUT_ZERO_WRITE_WARNING_THRESHOLD: usize = 30;
 
 pub struct AudioEngine {
     controls: MixerControls,
@@ -221,6 +237,7 @@ struct MicRuntime {
     last_read: usize,
     last_peak: f32,
     last_peak_at: Instant,
+    pressure: CapturePressureTracker,
 }
 
 #[cfg(windows)]
@@ -233,6 +250,130 @@ struct AppRuntime {
     last_peak_at: Instant,
     active_pid: Option<u32>,
     last_retry: Instant,
+}
+
+#[cfg(windows)]
+#[derive(Debug)]
+struct PressureEventWindow {
+    started_at: Instant,
+    events: usize,
+    last_warning_at: Option<Instant>,
+}
+
+#[cfg(windows)]
+impl Default for PressureEventWindow {
+    fn default() -> Self {
+        Self {
+            started_at: Instant::now(),
+            events: 0,
+            last_warning_at: None,
+        }
+    }
+}
+
+#[cfg(windows)]
+impl PressureEventWindow {
+    fn record(&mut self, events: usize, threshold: usize, now: Instant) -> bool {
+        if events == 0 {
+            return false;
+        }
+
+        if now.duration_since(self.started_at) >= CAPTURE_PRESSURE_WINDOW {
+            self.started_at = now;
+            self.events = 0;
+        }
+
+        self.events = self.events.saturating_add(events);
+        if self.events < threshold {
+            return false;
+        }
+
+        let can_warn = match self.last_warning_at {
+            Some(last_warning_at) => {
+                now.duration_since(last_warning_at) >= PRESSURE_WARNING_COOLDOWN
+            }
+            None => true,
+        };
+
+        if can_warn {
+            self.events = 0;
+            self.last_warning_at = Some(now);
+            return true;
+        }
+
+        false
+    }
+}
+
+#[cfg(windows)]
+#[derive(Debug, Default)]
+struct CapturePressureTracker {
+    window: PressureEventWindow,
+    zero_reads: usize,
+    short_reads: usize,
+    pending_overflows: usize,
+    errors: usize,
+}
+
+#[cfg(windows)]
+impl CapturePressureTracker {
+    fn record_diagnostics(&mut self, diagnostics: CaptureDiagnostics, now: Instant) -> bool {
+        self.zero_reads = self.zero_reads.saturating_add(diagnostics.zero_reads);
+        self.short_reads = self.short_reads.saturating_add(diagnostics.short_reads);
+        self.pending_overflows = self
+            .pending_overflows
+            .saturating_add(diagnostics.pending_overflows);
+        self.errors = self.errors.saturating_add(diagnostics.errors);
+
+        let pressure_events = diagnostics
+            .pending_overflows
+            .saturating_add(diagnostics.errors);
+        self.window
+            .record(pressure_events, CAPTURE_PRESSURE_WARNING_THRESHOLD, now)
+    }
+
+    fn record_error(&mut self, now: Instant) -> bool {
+        self.errors = self.errors.saturating_add(1);
+        self.window
+            .record(1, CAPTURE_PRESSURE_WARNING_THRESHOLD, now)
+    }
+}
+
+#[cfg(windows)]
+#[derive(Debug, Default)]
+struct RenderPressureTracker {
+    zero_writes: usize,
+    consecutive_zero_writes: usize,
+    last_warning_at: Option<Instant>,
+}
+
+#[cfg(windows)]
+impl RenderPressureTracker {
+    fn record_zero_write(&mut self, now: Instant) -> bool {
+        self.zero_writes = self.zero_writes.saturating_add(1);
+        self.consecutive_zero_writes = self.consecutive_zero_writes.saturating_add(1);
+        if self.consecutive_zero_writes < OUTPUT_ZERO_WRITE_WARNING_THRESHOLD {
+            return false;
+        }
+
+        let can_warn = match self.last_warning_at {
+            Some(last_warning_at) => {
+                now.duration_since(last_warning_at) >= PRESSURE_WARNING_COOLDOWN
+            }
+            None => true,
+        };
+
+        if can_warn {
+            self.last_warning_at = Some(now);
+            return true;
+        }
+
+        false
+    }
+
+    fn record_progress(&mut self) {
+        self.consecutive_zero_writes = 0;
+    }
 }
 
 impl RouteWorker {
@@ -299,6 +440,7 @@ impl RouteWorker {
                         last_read: 0,
                         last_peak: 0.0,
                         last_peak_at: Instant::now(),
+                        pressure: CapturePressureTracker::default(),
                     }
                 })
                 .collect();
@@ -322,6 +464,7 @@ impl RouteWorker {
                 .collect();
             let mut output_peak = 0.0;
             let mut output_peak_at = Instant::now();
+            let mut render_pressure = RenderPressureTracker::default();
 
             while !thread_stop.load(Ordering::Relaxed) {
                 let mut read_frames = 0;
@@ -337,6 +480,15 @@ impl RouteWorker {
 
                     match capture.read_stereo(&mut source.buffer) {
                         Ok(read) => {
+                            if source
+                                .pressure
+                                .record_diagnostics(capture.take_diagnostics(), Instant::now())
+                            {
+                                push_worker_warning(
+                                    &thread_status,
+                                    CAPTURE_PRESSURE_WARNING.to_string(),
+                                );
+                            }
                             source.last_read = read;
                             update_meter_peak(
                                 &mut source.last_peak,
@@ -346,6 +498,7 @@ impl RouteWorker {
                             read_frames = read_frames.max(read);
                         }
                         Err(error) => {
+                            let _ = source.pressure.record_error(Instant::now());
                             push_worker_warning(
                                 &thread_status,
                                 format!(
@@ -379,6 +532,7 @@ impl RouteWorker {
 
                     match capture.read_stereo(&mut source.buffer) {
                         Ok(read) => {
+                            let _ = capture.take_diagnostics();
                             source.last_read = read;
                             update_meter_peak(
                                 &mut source.last_peak,
@@ -430,8 +584,19 @@ impl RouteWorker {
                 let mut offset = 0;
                 while offset < mixed.len() && !thread_stop.load(Ordering::Relaxed) {
                     match render.write_stereo(&mixed[offset..]) {
-                        Ok(0) => thread::sleep(Duration::from_millis(1)),
-                        Ok(written) => offset += written,
+                        Ok(0) => {
+                            if render_pressure.record_zero_write(Instant::now()) {
+                                push_worker_warning(
+                                    &thread_status,
+                                    OUTPUT_PRESSURE_WARNING.to_string(),
+                                );
+                            }
+                            thread::sleep(Duration::from_millis(1));
+                        }
+                        Ok(written) => {
+                            render_pressure.record_progress();
+                            offset += written;
+                        }
                         Err(error) => {
                             set_worker_failure(
                                 &thread_status,
