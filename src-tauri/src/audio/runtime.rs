@@ -5,6 +5,7 @@ use super::{
     mixer::{self, MixerControls, SAMPLE_RATE, SourceMix, StereoFrame},
     render::{AudioRender, RenderSpec},
     resample::Resampler,
+    tone::{ToneConfig, ToneProcessor},
     types::{RouteState, RouteStatus},
 };
 use crate::config::AppConfig;
@@ -55,6 +56,7 @@ pub trait AudioBackend: Send + Sync + 'static {
 
 struct SourceState {
     buffer: SourceBuffer,
+    reset_tone: bool,
     active: bool,
     warning: Option<String>,
 }
@@ -63,6 +65,28 @@ struct SourcePort {
     shared: Arc<Mutex<SourceState>>,
     frames: Vec<StereoFrame>,
     peak: f32,
+    tone: ToneProcessor,
+}
+
+impl SourceState {
+    fn clear_audio(&mut self) {
+        self.buffer.clear();
+        self.reset_tone = true;
+    }
+}
+
+impl SourcePort {
+    fn read_processed(&mut self, tone: ToneConfig, elapsed: Duration) {
+        let mut state = self.shared.lock();
+        if std::mem::take(&mut state.reset_tone) {
+            self.tone.reset_history();
+        }
+        state.buffer.read(&mut self.frames);
+        drop(state);
+        self.tone.set_tone(tone);
+        self.tone.process(&mut self.frames);
+        self.peak = visible_meter_peak(self.peak, mixer::peak(&self.frames), elapsed);
+    }
 }
 
 pub struct RouteWorker {
@@ -135,6 +159,7 @@ fn spawn_source(
 ) -> SourcePort {
     let shared = Arc::new(Mutex::new(SourceState {
         buffer: SourceBuffer::new(frames),
+        reset_tone: true,
         active: false,
         warning: None,
     }));
@@ -146,6 +171,7 @@ fn spawn_source(
         shared,
         frames: vec![[0.0; 2]; quantum],
         peak: 0.0,
+        tone: ToneProcessor::default(),
     }
 }
 
@@ -175,7 +201,7 @@ fn capture_loop(
                     next_retry = now;
                     let mut state = state.lock();
                     state.active = false;
-                    state.buffer.clear();
+                    state.clear_audio();
                     state.warning = None;
                 }
                 Err(error) => state.lock().warning = Some(format!("{}: {error}", spec.name)),
@@ -196,6 +222,7 @@ fn capture_loop(
                         capture = Some(client);
                         backoff = Duration::from_millis(250);
                         let mut state = state.lock();
+                        state.clear_audio();
                         state.active = true;
                         state.warning = None;
                     }
@@ -218,13 +245,16 @@ fn capture_loop(
         match client.read_stereo(&mut raw) {
             Ok(read) => {
                 let diagnostics = client.take_diagnostics();
-                if diagnostics.discontinuities > 0 {
+                if diagnostics.discontinuities > 0 || diagnostics.pending_overflows > 0 {
                     converter = Resampler::new(client.sample_rate(), SAMPLE_RATE, frames);
-                    state.lock().buffer.clear();
+                    state.lock().clear_audio();
                 }
                 converter.process(&raw[..read], &mut converted);
                 let mut state = state.lock();
                 state.buffer.push(&converted);
+                if state.buffer.overflows > 0 {
+                    state.reset_tone = true;
+                }
                 if diagnostics.pending_overflows > 0
                     || diagnostics.errors > 0
                     || state.buffer.overflows > 0
@@ -245,7 +275,7 @@ fn capture_loop(
                 next_retry = Instant::now() + backoff;
                 let mut state = state.lock();
                 state.active = false;
-                state.buffer.clear();
+                state.clear_audio();
                 state.warning = Some(format!("{} capture stopped: {error}", spec.name));
             }
         }
@@ -316,11 +346,19 @@ fn render_loop(
         let now = Instant::now();
         let elapsed = now.duration_since(last_meter);
         last_meter = now;
-        for source in &mut sources {
-            source.shared.lock().buffer.read(&mut source.frames);
-            source.peak = visible_meter_peak(source.peak, mixer::peak(&source.frames), elapsed);
-        }
         let current_controls = Arc::clone(&controls.lock());
+        for source in &mut sources {
+            let list = match source.spec.kind {
+                SourceKind::Microphone(_) => &current_controls.mic_sources,
+                SourceKind::Application(_) => &current_controls.app_sources,
+            };
+            let tone = list
+                .iter()
+                .find(|control| control.id == source.spec.id)
+                .map(|control| control.tone)
+                .unwrap_or_default();
+            source.read_processed(tone, elapsed);
+        }
         let inputs = sources.iter().map(|source| {
             let list = match source.spec.kind {
                 SourceKind::Microphone(_) => &current_controls.mic_sources,
@@ -535,6 +573,79 @@ mod tests {
         wait_until(|| backend.heard.load(Ordering::Acquire));
         assert!(backend.attempts.load(Ordering::Acquire) >= 2);
         worker.stop();
+    }
+
+    #[test]
+    fn live_tone_updates_do_not_reopen_capture_and_meters_precede_gain_and_mute() {
+        let backend = Arc::new(Backend {
+            heard: Arc::new(AtomicBool::new(false)),
+            activating: AtomicBool::new(false),
+            cancelled: AtomicBool::new(false),
+            attempts: AtomicUsize::new(0),
+            fail_mic_once: false,
+        });
+        let config = AppConfig {
+            mic_sources: vec![MicSourceConfig::new("mic".into(), 1.0, false)],
+            output_device_id: Some("out".into()),
+            ..AppConfig::default()
+        };
+        let mut status = RouteStatus::default();
+        status.meters.mic_peaks.insert("mic:mic".into(), 0.0);
+        let worker = RouteWorker::start(config, MixerControls::default(), status, backend.clone());
+        wait_until(|| worker.status.lock().meters.mic_peaks["mic:mic"] >= 0.24);
+        *worker.controls.lock() = Arc::new(MixerControls {
+            mic_sources: vec![mixer::SourceControl {
+                id: "mic:mic".into(),
+                gain: 0.0,
+                muted: true,
+                tone: ToneConfig {
+                    x: -1.0,
+                    y: 0.0,
+                    bypassed: false,
+                },
+            }],
+            ..MixerControls::default()
+        });
+        wait_until(|| {
+            let status = worker.status.lock();
+            status.meters.mic_peaks["mic:mic"] > 0.45 && status.meters.output_peak == 0.0
+        });
+        assert_eq!(backend.attempts.load(Ordering::Acquire), 1);
+        worker.stop();
+    }
+
+    #[test]
+    fn cleared_capture_audio_discards_eq_history_before_the_next_block() {
+        let shared = Arc::new(Mutex::new(SourceState {
+            buffer: SourceBuffer::new(960),
+            reset_tone: true,
+            active: true,
+            warning: None,
+        }));
+        let mut port = SourcePort {
+            spec: SourceSpec {
+                id: "mic".into(),
+                name: "Mic".into(),
+                kind: SourceKind::Microphone("mic".into()),
+            },
+            shared: shared.clone(),
+            frames: vec![[0.0; 2]; 240],
+            peak: 0.0,
+            tone: ToneProcessor::default(),
+        };
+        let tone = ToneConfig {
+            x: -1.0,
+            y: 1.0,
+            bypassed: false,
+        };
+        shared.lock().buffer.push(&[[0.25; 2]; 960]);
+        for _ in 0..4 {
+            port.read_processed(tone, Duration::from_millis(5));
+        }
+        shared.lock().clear_audio();
+        shared.lock().buffer.push(&[[0.0; 2]; 960]);
+        port.read_processed(tone, Duration::from_millis(5));
+        assert!(port.frames.iter().flatten().all(|sample| *sample == 0.0));
     }
 
     struct ChangingBackend {

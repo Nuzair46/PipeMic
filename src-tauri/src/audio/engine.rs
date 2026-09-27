@@ -93,6 +93,7 @@ impl AudioEngine {
                         id: c.id.clone(),
                         gain: c.gain,
                         muted: c.muted,
+                        tone: c.tone.normalized(),
                     })
                     .collect(),
                 app_sources: controls
@@ -102,6 +103,7 @@ impl AudioEngine {
                         id: c.id.clone(),
                         gain: c.gain,
                         muted: c.muted,
+                        tone: c.tone.normalized(),
                     })
                     .collect(),
                 master_gain: controls.master_gain,
@@ -229,6 +231,7 @@ fn controls_from_config(config: &AppConfig) -> MixerControls {
                 id: source.id.clone(),
                 gain: source.gain,
                 muted: source.muted,
+                tone: source.tone.normalized(),
             })
             .collect(),
         app_sources: config
@@ -238,6 +241,7 @@ fn controls_from_config(config: &AppConfig) -> MixerControls {
                 id: source.id.clone(),
                 gain: source.gain,
                 muted: source.muted,
+                tone: source.tone.normalized(),
             })
             .collect(),
         master_gain: config.master_gain,

@@ -7,6 +7,7 @@ use std::{
 use serde::{Deserialize, Serialize};
 
 use crate::audio::mixer::DEFAULT_BUFFER_FRAMES;
+use crate::audio::tone::ToneConfig;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -15,6 +16,8 @@ pub struct MicSourceConfig {
     pub device_id: String,
     pub gain: f32,
     pub muted: bool,
+    #[serde(default)]
+    pub tone: ToneConfig,
 }
 
 impl MicSourceConfig {
@@ -24,6 +27,7 @@ impl MicSourceConfig {
             device_id,
             gain,
             muted,
+            tone: ToneConfig::default(),
         }
     }
 }
@@ -36,6 +40,8 @@ pub struct AppSourceConfig {
     pub display_name: Option<String>,
     pub gain: f32,
     pub muted: bool,
+    #[serde(default)]
+    pub tone: ToneConfig,
 }
 
 impl AppSourceConfig {
@@ -47,6 +53,7 @@ impl AppSourceConfig {
             display_name,
             gain,
             muted,
+            tone: ToneConfig::default(),
         }
     }
 }
@@ -127,6 +134,8 @@ pub struct SourceControlUpdate {
     pub id: String,
     pub gain: f32,
     pub muted: bool,
+    #[serde(default)]
+    pub tone: ToneConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -148,6 +157,7 @@ impl From<&AppConfig> for ControlUpdate {
                     id: source.id.clone(),
                     gain: source.gain,
                     muted: source.muted,
+                    tone: source.tone.normalized(),
                 })
                 .collect(),
             app_sources: config
@@ -157,6 +167,7 @@ impl From<&AppConfig> for ControlUpdate {
                     id: source.id.clone(),
                     gain: source.gain,
                     muted: source.muted,
+                    tone: source.tone.normalized(),
                 })
                 .collect(),
             master_gain: config.master_gain,
@@ -193,7 +204,7 @@ pub fn normalize_executable(executable: &str) -> Option<String> {
 
 trait SourceConfig {
     fn id(&self) -> &str;
-    fn set_gain_muted(&mut self, gain: f32, muted: bool);
+    fn set_controls(&mut self, control: &SourceControlUpdate);
 }
 
 impl SourceConfig for MicSourceConfig {
@@ -201,9 +212,10 @@ impl SourceConfig for MicSourceConfig {
         &self.id
     }
 
-    fn set_gain_muted(&mut self, gain: f32, muted: bool) {
-        self.gain = gain;
-        self.muted = muted;
+    fn set_controls(&mut self, control: &SourceControlUpdate) {
+        self.gain = control.gain;
+        self.muted = control.muted;
+        self.tone = control.tone.normalized();
     }
 }
 
@@ -212,16 +224,17 @@ impl SourceConfig for AppSourceConfig {
         &self.id
     }
 
-    fn set_gain_muted(&mut self, gain: f32, muted: bool) {
-        self.gain = gain;
-        self.muted = muted;
+    fn set_controls(&mut self, control: &SourceControlUpdate) {
+        self.gain = control.gain;
+        self.muted = control.muted;
+        self.tone = control.tone.normalized();
     }
 }
 
 fn apply_source_controls<T: SourceConfig>(sources: &mut [T], controls: &[SourceControlUpdate]) {
     for source in sources {
         if let Some(control) = controls.iter().find(|control| control.id == source.id()) {
-            source.set_gain_muted(control.gain, control.muted);
+            source.set_controls(control);
         }
     }
 }
@@ -340,6 +353,7 @@ fn sanitize_mic_sources(sources: Vec<MicSourceConfig>) -> Vec<MicSourceConfig> {
                 device_id,
                 gain: source.gain,
                 muted: source.muted,
+                tone: source.tone.normalized(),
             })
         })
         .collect()
@@ -366,6 +380,7 @@ fn sanitize_app_sources(sources: Vec<AppSourceConfig>) -> Vec<AppSourceConfig> {
                 display_name: source.display_name.filter(|name| !name.trim().is_empty()),
                 gain: source.gain,
                 muted: source.muted,
+                tone: source.tone.normalized(),
             })
         })
         .collect()
@@ -516,6 +531,64 @@ mod tests {
         );
         let settings: AppSettings = serde_json::from_value(fixture["settings"].clone()).unwrap();
         assert_eq!(serde_json::to_value(settings).unwrap(), fixture["settings"]);
+    }
+
+    #[test]
+    fn existing_source_arrays_without_tone_load_neutral() {
+        let mut fixture: serde_json::Value =
+            serde_json::from_str(include_str!("../../tests/fixtures/ipc.json")).unwrap();
+        for kind in ["micSources", "appSources"] {
+            fixture["config"][kind][0]
+                .as_object_mut()
+                .unwrap()
+                .remove("tone");
+        }
+        let raw: RawAppConfig = serde_json::from_value(fixture["config"].clone()).unwrap();
+        let config = AppConfig::from(raw);
+        assert_eq!(config.mic_sources[0].tone, ToneConfig::default());
+        assert_eq!(config.app_sources[0].tone, ToneConfig::default());
+        let control: SourceControlUpdate =
+            serde_json::from_str(r#"{"id":"old","gain":1,"muted":false}"#).unwrap();
+        assert_eq!(control.tone, ToneConfig::default());
+    }
+
+    #[test]
+    fn tone_positions_and_bypass_survive_disk_and_controls_are_bounded() {
+        let fixture: serde_json::Value =
+            serde_json::from_str(include_str!("../../tests/fixtures/ipc.json")).unwrap();
+        let mut config: AppConfig = serde_json::from_value(fixture["config"].clone()).unwrap();
+        let path = temp_config_path("tone");
+        save_config_to_path(&config, &path).unwrap();
+        assert_eq!(load_config_from_path(&path).unwrap(), config);
+        let mut controls = ControlUpdate::from(&config);
+        controls.mic_sources[0].tone = ToneConfig {
+            x: 7.0,
+            y: f32::NAN,
+            bypassed: true,
+        };
+        config.apply_controls(&controls);
+        assert_eq!(
+            config.mic_sources[0].tone,
+            ToneConfig {
+                x: 1.0,
+                y: 0.0,
+                bypassed: true
+            }
+        );
+        let parsed: ToneConfig =
+            serde_json::from_str(r#"{"x":-20,"y":5,"bypassed":true}"#).unwrap();
+        assert_eq!(
+            parsed,
+            ToneConfig {
+                x: -1.0,
+                y: 1.0,
+                bypassed: true
+            }
+        );
+        save_config_to_path(&config, &path).unwrap();
+        assert_eq!(load_config_from_path(&path).unwrap(), config);
+        let _ = fs::remove_file(&path);
+        let _ = fs::remove_file(path.with_extension("json.bak"));
     }
 
     fn temp_config_path(name: &str) -> PathBuf {

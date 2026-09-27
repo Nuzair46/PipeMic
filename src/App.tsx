@@ -20,7 +20,7 @@ import { isSelectableSession, savedDisplayName, uniqueSessionsByExecutable } fro
 import { ToastProvider, ToastStack, type AppToast, type ToastTone } from "@/components/ui/toast";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { useMixer } from "@/lib/use-mixer";
-import { defaultConfig, settingsFromConfig } from "@/lib/config";
+import { defaultConfig, neutralTone, settingsFromConfig } from "@/lib/config";
 import { registerHotkeys } from "@/lib/hotkeys";
 
 export default function App() {
@@ -117,7 +117,7 @@ export default function App() {
   }, [controller, draftConfig, pushToast]);
 
   const updateMicSource = useCallback(
-    (sourceId: string, patch: Partial<Pick<MicSourceConfig, "gain" | "muted">>) => {
+    (sourceId: string, patch: Partial<Pick<MicSourceConfig, "gain" | "muted" | "tone">>) => {
       applyControlsConfig({
         micSources: controller.getSnapshot().config.micSources.map((source) => (source.id === sourceId ? { ...source, ...patch } : source)),
       });
@@ -126,7 +126,7 @@ export default function App() {
   );
 
   const updateAppSource = useCallback(
-    (sourceId: string, patch: Partial<Pick<AppSourceConfig, "gain" | "muted">>) => {
+    (sourceId: string, patch: Partial<Pick<AppSourceConfig, "gain" | "muted" | "tone">>) => {
       applyControlsConfig({
         appSources: controller.getSnapshot().config.appSources.map((source) => (source.id === sourceId ? { ...source, ...patch } : source)),
       });
@@ -183,6 +183,7 @@ export default function App() {
             deviceId,
             gain: 1,
             muted: false,
+            tone: { ...neutralTone },
           },
         ],
       });
@@ -205,6 +206,7 @@ export default function App() {
             displayName: savedDisplayName(session),
             gain: 1,
             muted: false,
+            tone: { ...neutralTone },
           },
         ],
       });

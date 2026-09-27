@@ -9,6 +9,7 @@ pub mod render;
 pub mod resample;
 pub mod runtime;
 pub mod sessions;
+pub mod tone;
 pub mod types;
 
 #[cfg(windows)]

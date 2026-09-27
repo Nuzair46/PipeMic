@@ -75,6 +75,16 @@
 }
 
 @layer components {
+  .tone-pad-layout {
+    display: grid;
+    grid-template-columns: 28px 80px 32px;
+    grid-template-rows: 12px 80px 12px;
+    gap: 4px;
+    font-size: 11px;
+    line-height: 12px;
+    color: hsl(var(--muted-foreground));
+  }
+
   .surface-panel {
     @apply border bg-background shadow-[0_20px_80px_rgba(0,0,0,0.34)];
   }

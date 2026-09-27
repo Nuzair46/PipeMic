@@ -25,11 +25,18 @@ export interface AudioSession {
   discoverySource: AppDiscoverySource;
 }
 
+export interface ToneConfig {
+  x: number;
+  y: number;
+  bypassed: boolean;
+}
+
 export interface MicSourceConfig {
   id: string;
   deviceId: string;
   gain: number;
   muted: boolean;
+  tone: ToneConfig;
 }
 
 export interface AppSourceConfig {
@@ -38,12 +45,14 @@ export interface AppSourceConfig {
   displayName?: string | null;
   gain: number;
   muted: boolean;
+  tone: ToneConfig;
 }
 
 export interface SourceControlUpdate {
   id: string;
   gain: number;
   muted: boolean;
+  tone: ToneConfig;
 }
 
 export interface LevelMeters {

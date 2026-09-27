@@ -1,4 +1,5 @@
 import type { AppConfig, AppSettings, AudioDevice, AudioSession, ControlUpdate, LevelMeters, RouteStatus } from "./types";
+import { cloneAppConfig, neutralTone } from "./config";
 import { micSourceId, appSourceId } from "./devices";
 import { currentAppVersion, checkForUpdate, sourceUrl, safeReleaseUrl } from "./updates";
 
@@ -174,6 +175,7 @@ let mockConfig: AppConfig = {
       deviceId: "capture:studio-mic",
       gain: 1,
       muted: false,
+      tone: { ...neutralTone },
     },
   ],
   appSources: [
@@ -183,6 +185,7 @@ let mockConfig: AppConfig = {
       displayName: "Spotify",
       gain: 0.72,
       muted: false,
+      tone: { ...neutralTone },
     },
   ],
 };
@@ -240,12 +243,12 @@ export const previewApi = {
   loadConfig: () => command<AppConfig>("load_config", {}, () => mockConfig),
   saveConfig: (config: AppConfig) =>
     command<AppConfig>("save_config", { config }, () => {
-      mockConfig = cloneConfig(config);
+      mockConfig = cloneAppConfig(config);
       return mockConfig;
     }),
   startRouting: (config: AppConfig) =>
     command<RouteStatus>("start_routing", { config }, () => {
-      mockConfig = cloneConfig(config);
+      mockConfig = cloneAppConfig(config);
       mockStartedAt = Date.now();
       return mockStatus();
     }),
@@ -269,7 +272,7 @@ export const previewApi = {
   },
   applyAppSettings: (config: AppSettings) =>
     command<AppConfig>("apply_app_settings", { config }, () => {
-      mockConfig = cloneConfig({ ...mockConfig, ...config });
+      mockConfig = cloneAppConfig({ ...mockConfig, ...config });
       return mockConfig;
     }),
   updateControls: (controls: ControlUpdate) =>
@@ -286,12 +289,3 @@ export const previewApi = {
       return mockStatus();
     }),
 };
-
-function cloneConfig(config: AppConfig): AppConfig {
-  return {
-    ...config,
-    micSources: config.micSources.map((source) => ({ ...source })),
-    appSources: config.appSources.map((source) => ({ ...source })),
-    shortcuts: { ...config.shortcuts },
-  };
-}

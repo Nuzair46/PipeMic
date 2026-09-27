@@ -1,9 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { MixerController, type MixerApi } from "../src/lib/controller";
-import { cloneAppConfig, defaultConfig, settingsFromConfig, stoppedStatus } from "../src/lib/config";
+import { cloneAppConfig, defaultConfig, neutralTone, settingsFromConfig, stoppedStatus } from "../src/lib/config";
 import { errorMessage } from "../src/lib/errors";
-import type { RouteStatus } from "../src/lib/types";
+import type { ControlUpdate, RouteStatus } from "../src/lib/types";
 
 const running: RouteStatus = { ...stoppedStatus, state: "running" };
 const tick = () => new Promise<void>(resolve => setImmediate(resolve));
@@ -14,7 +14,7 @@ function deferred<T>() {
 }
 
 function setup(overrides: Partial<MixerApi> = {}) {
-  const config = { ...cloneAppConfig(defaultConfig), outputDeviceId: "out", micSources: [{ id: "mic:one", deviceId: "one", gain: 0.7, muted: false }] };
+  const config = { ...cloneAppConfig(defaultConfig), outputDeviceId: "out", micSources: [{ id: "mic:one", deviceId: "one", gain: 0.7, muted: false, tone: { ...neutralTone } }] };
   const saved: typeof config[] = [];
   const errors: string[] = [];
   const api: MixerApi = {
@@ -130,6 +130,88 @@ test("polling is single-flight and a stale read cannot replace a newer Stop", as
 test("native structured errors retain their message", () => {
   assert.equal(errorMessage({ message: "Disk full" }), "Disk full");
   assert.equal(errorMessage(new Error("Denied")), "Denied");
+});
+
+test("tone drags coalesce behind IPC and send the final position with concurrent gain and mute", async () => {
+  const delayed = deferred<RouteStatus>();
+  const sent: ControlUpdate[] = [];
+  const { controller } = setup({ updateControls: async controls => {
+    sent.push(controls);
+    return sent.length === 1 ? delayed.promise : running;
+  } });
+  await controller.refresh();
+  const changeSource = (patch: Partial<ReturnType<typeof controller.getSnapshot>["config"]["micSources"][number]>) =>
+    controller.changeControls({ micSources: controller.getSnapshot().config.micSources.map(source => ({ ...source, ...patch })) });
+  const first = changeSource({ tone: { x: 0.1, y: 0, bypassed: false } });
+  await tick();
+  const edits = [];
+  for (let i = 2; i <= 100; i++) edits.push(changeSource({ tone: { x: i / 100, y: -0.6, bypassed: false } }));
+  edits.push(changeSource({ gain: 1.4, muted: true }));
+  assert.equal(sent.length, 1);
+  delayed.resolve(running);
+  await Promise.all([first, ...edits]);
+  assert.equal(sent.length, 2);
+  assert.deepEqual(sent[1].micSources[0], { id: "mic:one", gain: 1.4, muted: true, tone: { x: 1, y: -0.6, bypassed: false } });
+});
+
+test("removing a source during a pending tone update cannot restore it", async () => {
+  const delayed = deferred<RouteStatus>();
+  const sent: ControlUpdate[] = [];
+  const { controller, saved } = setup({ updateControls: async controls => {
+    sent.push(controls);
+    return sent.length === 1 ? delayed.promise : stoppedStatus;
+  } });
+  await controller.refresh();
+  const first = controller.changeControls({ masterGain: 0.5 });
+  await tick();
+  const tone = controller.changeControls({ micSources: controller.getSnapshot().config.micSources.map(source => ({ ...source, tone: { x: 1, y: 1, bypassed: false } })) });
+  const remove = controller.changeTopology({ micSources: [] });
+  delayed.resolve(stoppedStatus);
+  await Promise.all([first, tone, remove]);
+  assert.deepEqual(sent.at(-1)?.micSources, []);
+  assert.deepEqual(saved.at(-1)?.micSources, []);
+  assert.deepEqual(controller.getSnapshot().config.micSources, []);
+});
+
+test("a queued control response cannot replace a later Stop intent", async () => {
+  const settingsResult = deferred<ReturnType<typeof cloneAppConfig>>();
+  const stopResult = deferred<RouteStatus>();
+  const { controller, config } = setup({
+    applyAppSettings: () => settingsResult.promise,
+    updateControls: async () => running,
+    stopRouting: () => stopResult.promise,
+  });
+  await controller.refresh();
+  const settings = controller.saveSettings(settingsFromConfig(config));
+  await tick();
+  const controls = controller.changeControls({ masterGain: 0.6 });
+  const stop = controller.stop();
+  settingsResult.resolve(config);
+  await controls;
+  assert.equal(controller.getSnapshot().status.state, "stopped");
+  stopResult.resolve(stoppedStatus);
+  await Promise.all([settings, stop]);
+});
+
+test("saved tone and bypass survive a new controller without capture restarts", async () => {
+  const context = setup({
+    startRouting: async () => { throw new Error("Tone must not restart capture"); },
+    stopRouting: async () => { throw new Error("Tone must not stop capture"); },
+  });
+  let persisted = cloneAppConfig(context.config);
+  context.api.loadConfig = async () => cloneAppConfig(persisted);
+  context.api.updateControls = async controls => {
+    persisted = { ...persisted, micSources: persisted.micSources.map(source => ({ ...source, ...controls.micSources.find(control => control.id === source.id) })) };
+    return running;
+  };
+  await context.controller.refresh();
+  const tone = { x: -0.75, y: 0.4, bypassed: true };
+  await context.controller.changeControls({ micSources: persisted.micSources.map(source => ({ ...source, tone })) });
+  const restarted = new MixerController(context.api, () => assert.fail("Unexpected error"));
+  await restarted.refresh();
+  assert.deepEqual(restarted.getSnapshot().config.micSources[0].tone, tone);
+  assert.equal(context.controller.getSnapshot().status.state, "running");
+  assert.deepEqual(context.errors, []);
 });
 
 test("saved theme choices survive a new controller without restarting audio", async () => {

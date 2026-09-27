@@ -30,8 +30,8 @@ type SourcesPanelProps = {
   meters: LevelMeters;
   onAddMicSource: (deviceId: string) => void;
   onAddAppSource: (sessionId: string) => void;
-  onMicSourceChange: (sourceId: string, patch: Partial<Pick<MicSourceConfig, "gain" | "muted">>) => void;
-  onAppSourceChange: (sourceId: string, patch: Partial<Pick<AppSourceConfig, "gain" | "muted">>) => void;
+  onMicSourceChange: (sourceId: string, patch: Partial<Pick<MicSourceConfig, "gain" | "muted" | "tone">>) => void;
+  onAppSourceChange: (sourceId: string, patch: Partial<Pick<AppSourceConfig, "gain" | "muted" | "tone">>) => void;
   onRemoveMicSource: (sourceId: string) => void;
   onRemoveAppSource: (sourceId: string) => void;
 };
@@ -87,10 +87,12 @@ export function SourcesPanel({
                   detail={device ? undefined : "Device unavailable"}
                   gain={source.gain}
                   muted={source.muted}
+                  tone={source.tone}
                   level={meters.micPeaks[source.id] ?? 0}
                   inactive={!device}
                   onGainChange={(gain) => onMicSourceChange(source.id, { gain })}
                   onMutedChange={(muted) => onMicSourceChange(source.id, { muted })}
+                  onToneChange={(tone) => onMicSourceChange(source.id, { tone })}
                   onRemove={() => onRemoveMicSource(source.id)}
                 />
               );
@@ -128,10 +130,12 @@ export function SourcesPanel({
                   detail={undefined}
                   gain={source.gain}
                   muted={source.muted}
+                  tone={source.tone}
                   level={meters.appPeaks[source.id] ?? 0}
                   inactive={!active}
                   onGainChange={(gain) => onAppSourceChange(source.id, { gain })}
                   onMutedChange={(muted) => onAppSourceChange(source.id, { muted })}
+                  onToneChange={(tone) => onAppSourceChange(source.id, { tone })}
                   onRemove={() => onRemoveAppSource(source.id)}
                 />
               );
