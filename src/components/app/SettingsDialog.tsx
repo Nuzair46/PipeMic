@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Github } from "lucide-react";
-import type { AppConfig, ShortcutConfig } from "@/lib/api";
+import type { AppSettings, ShortcutConfig } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -14,9 +14,9 @@ import { Switch } from "@/components/ui/switch";
 
 type SettingsDialogProps = {
   open: boolean;
-  config: AppConfig;
+  config: AppSettings;
   onOpenChange: (open: boolean) => void;
-  onConfigChange: (config: AppConfig) => void;
+  onConfigChange: (config: AppSettings) => void;
   onSave: () => void;
   onOpenSource: () => void;
 };
@@ -147,15 +147,6 @@ function SwitchRow({ label, checked, onCheckedChange }: { label: string; checked
       <Switch checked={checked} onCheckedChange={onCheckedChange} aria-label={label} />
     </label>
   );
-}
-
-export function cloneAppConfig(config: AppConfig): AppConfig {
-  return {
-    ...config,
-    micSources: config.micSources.map((source) => ({ ...source })),
-    appSources: config.appSources.map((source) => ({ ...source })),
-    shortcuts: { ...config.shortcuts },
-  };
 }
 
 export function settingsValidationError(shortcuts: ShortcutConfig) {

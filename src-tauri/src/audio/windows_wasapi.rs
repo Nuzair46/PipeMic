@@ -15,7 +15,7 @@ use windows::{
         System::{
             Com::{
                 CLSCTX_ALL, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx, CoTaskMemFree,
-                STGM_READ, StructuredStorage::PropVariantToStringAlloc,
+                CoUninitialize, STGM_READ, StructuredStorage::PropVariantToStringAlloc,
             },
             Threading::{
                 OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
@@ -46,7 +46,7 @@ struct WindowAppCandidate {
 }
 
 pub fn list_devices(flow: DeviceFlow) -> AudioResult<Vec<AudioDevice>> {
-    init_com();
+    let _apartment = ComApartment::new()?;
     let data_flow = data_flow(flow);
 
     unsafe {
@@ -87,7 +87,7 @@ pub fn list_devices(flow: DeviceFlow) -> AudioResult<Vec<AudioDevice>> {
 }
 
 pub fn list_sessions() -> AudioResult<Vec<AudioSession>> {
-    init_com();
+    let _apartment = ComApartment::new()?;
 
     unsafe {
         let enumerator: IMMDeviceEnumerator =
@@ -227,14 +227,38 @@ unsafe fn window_title(hwnd: HWND) -> Option<String> {
     (!title.is_empty()).then_some(title)
 }
 
-pub(crate) fn init_com() {
+// The guard is deliberately thread-affine and drops after all owned COM interfaces.
+pub(crate) struct ComApartment(std::marker::PhantomData<std::rc::Rc<()>>);
+impl ComApartment {
+    pub fn new() -> AudioResult<Self> {
+        unsafe {
+            CoInitializeEx(None, COINIT_MULTITHREADED).ok()?;
+        }
+        Ok(Self(std::marker::PhantomData))
+    }
+}
+impl Drop for ComApartment {
+    fn drop(&mut self) {
+        unsafe {
+            CoUninitialize();
+        }
+    }
+}
+
+pub(crate) fn process_alive(pid: u32) -> bool {
+    use windows::Win32::System::Threading::GetExitCodeProcess;
     unsafe {
-        let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+        let Ok(handle) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) else {
+            return false;
+        };
+        let mut code = 0;
+        let alive = GetExitCodeProcess(handle, &mut code).is_ok() && code == 259;
+        let _ = CloseHandle(handle);
+        alive
     }
 }
 
 pub(crate) unsafe fn audio_client_for_endpoint_id(id: &str) -> AudioResult<IAudioClient> {
-    init_com();
     let enumerator: IMMDeviceEnumerator = CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)?;
     let wide = wide_null(id);
     let device = enumerator.GetDevice(windows::core::PCWSTR(wide.as_ptr()))?;

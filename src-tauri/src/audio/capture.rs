@@ -26,6 +26,7 @@ pub struct CaptureDiagnostics {
     pub short_reads: usize,
     pub pending_overflows: usize,
     pub errors: usize,
+    pub discontinuities: usize,
 }
 
 impl CaptureSpec {
@@ -49,6 +50,10 @@ impl ProcessLoopbackSpec {
 }
 
 pub trait AudioCapture {
+    /// The negotiated frame rate, before normalization to the mixer rate.
+    fn sample_rate(&self) -> u32 {
+        SAMPLE_RATE
+    }
     fn read_stereo(&mut self, output: &mut [StereoFrame]) -> AudioResult<usize>;
 
     fn take_diagnostics(&mut self) -> CaptureDiagnostics {
@@ -64,8 +69,9 @@ pub fn open_microphone_capture(spec: &CaptureSpec) -> AudioResult<Box<dyn AudioC
 #[cfg(windows)]
 pub fn open_process_loopback_capture(
     spec: &ProcessLoopbackSpec,
+    stop: &std::sync::atomic::AtomicBool,
 ) -> AudioResult<Box<dyn AudioCapture>> {
-    super::wasapi_io::open_process_loopback_capture(spec)
+    super::wasapi_io::open_process_loopback_capture(spec, stop)
 }
 
 #[cfg(not(windows))]
@@ -78,6 +84,7 @@ pub fn open_microphone_capture(_spec: &CaptureSpec) -> AudioResult<Box<dyn Audio
 #[cfg(not(windows))]
 pub fn open_process_loopback_capture(
     _spec: &ProcessLoopbackSpec,
+    _stop: &std::sync::atomic::AtomicBool,
 ) -> AudioResult<Box<dyn AudioCapture>> {
     Err(AudioError::CaptureFailed(
         "WASAPI process loopback capture is not connected on this platform".to_string(),

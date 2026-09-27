@@ -11,7 +11,8 @@
     "preview": "vite preview --host 127.0.0.1",
     "tauri": "tauri",
     "typecheck": "tsc --noEmit",
-    "version:bump": "node tools/version-bump.mjs"
+    "version:bump": "node tools/version-bump.mjs",
+    "test": "node tools/test.mjs"
   },
   "dependencies": {
     "@radix-ui/react-dialog": "^1.1.7",

@@ -114,8 +114,10 @@ Yes. Add each running application in `Application Sources`, then adjust gain and
 - `src/` React UI
 - `src-tauri/` Tauri desktop app, Windows backend, installer config, and Rust tests
 - `src-tauri/vendor/vb-cable/` vendored VB-CABLE driver package used by the NSIS installer
-- `.github/workflows/` manual Windows release workflow
+- `.github/workflows/` pull-request validation and manual Windows releases
 - `tools/version-bump.mjs` version synchronization helper
+- [Architecture review and implementation](ARCHITECTURE_REVIEW.md)
+- [Windows integration checks](tests/WINDOWS_SMOKE.md) and [installer maintenance](src-tauri/nsis/README.md)
 
 ### Build Locally (Windows)
 
@@ -150,16 +152,17 @@ src-tauri/target/release/bundle/nsis/*setup.exe
 
 ```bash
 yarn typecheck
+yarn test
 yarn build
-cargo test --manifest-path src-tauri/Cargo.toml
+cargo test --manifest-path src-tauri/Cargo.toml --locked
 ```
 
 For core Rust checks without the full Tauri app feature:
 
 ```bash
 cd src-tauri
-cargo test --lib --no-default-features
-cargo check --target x86_64-pc-windows-msvc --lib --no-default-features
+cargo test --lib --no-default-features --locked
+cargo check --target x86_64-pc-windows-msvc --lib --no-default-features --locked
 ```
 
 The full Tauri app target needs the platform runtime toolchain:
@@ -169,14 +172,20 @@ The full Tauri app target needs the platform runtime toolchain:
 
 ### CI / Release
 
-- Workflow: `.github/workflows/ci-build-release.yml`
+- `.github/workflows/ci.yml` validates pull requests and pushes to `main`: frontend tests/build, core Rust tests, full Windows tests, and NSIS packaging.
+- Release workflow: `.github/workflows/ci-build-release.yml`
 - Manual release workflow runs via `workflow_dispatch` and takes a version input
 - Release pipeline updates these files together before building:
   - `package.json`
   - `src-tauri/Cargo.toml`
+  - `src-tauri/Cargo.lock`
   - `src-tauri/tauri.conf.json`
-- Release pipeline commits the version bump, creates tag `vX.Y.Z`, builds the Windows NSIS installer, and publishes the GitHub Release
+- Release pipeline prepares the version bump without pushing, runs frontend/Rust checks, and builds the Windows NSIS installer. Only then does it atomically push the version commit and tag `vX.Y.Z` and publish the GitHub Release. If `main` changed during the build, publication stops and the workflow must be rerun.
 - Release artifacts are limited to `src-tauri/target/release/bundle/nsis/*setup.exe`
+
+CI caches Yarn packages, compiled Cargo dependencies under `src-tauri/target`, and Tauri's Windows packaging tools. Windows validation and release jobs share a Rust cache key, retain dependencies after failures, and run Rust tests with the same release profile/features as bundling. Both jobs build the frontend once and use `src-tauri/tauri.ci.conf.json` to skip Tauri's duplicate frontend build. Local builds retain the usual frontend build hook. New pushes cancel obsolete validation runs; release runs are serialized.
+
+Cache paths follow the [Rust cache action's workspace-relative target convention](https://github.com/Swatinem/rust-cache#example-usage). A first run or toolchain/dependency upgrade can still require compilation; subsequent runs should reuse compatible dependencies.
 
 Release process:
 
@@ -184,7 +193,7 @@ Release process:
 2. Open `Actions` -> `Release Build and Publish` -> `Run workflow`.
 3. Enter a version such as `0.2.0`, or a bump kind: `patch`, `minor`, `major`.
 4. Run the workflow.
-5. The workflow bumps all version files, commits the change, creates the tag, builds the Windows NSIS installer, and publishes the GitHub Release.
+5. The workflow validates the prepared version and installer before committing, tagging, and publishing the release.
 
 ### Version Helper
 

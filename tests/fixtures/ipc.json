@@ -1,0 +1,69 @@
+{
+  "config": {
+    "micSources": [
+      {
+        "id": "mic:one",
+        "deviceId": "one",
+        "gain": 1.0,
+        "muted": false
+      }
+    ],
+    "appSources": [
+      {
+        "id": "app:player.exe",
+        "executable": "player.exe",
+        "displayName": "Player",
+        "gain": 0.5,
+        "muted": true
+      }
+    ],
+    "outputDeviceId": "out",
+    "masterGain": 1.0,
+    "bufferFrames": 960,
+    "downmixToMono": true,
+    "shortcuts": {
+      "micMute": "Ctrl+Alt+M",
+      "appMute": "Ctrl+Alt+A",
+      "routing": "Ctrl+Alt+S"
+    },
+    "startWithWindows": true,
+    "minimizeToTray": true
+  },
+  "controls": {
+    "micSources": [
+      {
+        "id": "mic:one",
+        "gain": 1.0,
+        "muted": false
+      }
+    ],
+    "appSources": [
+      {
+        "id": "app:player.exe",
+        "gain": 0.5,
+        "muted": true
+      }
+    ],
+    "masterGain": 1.0,
+    "downmixToMono": true
+  },
+  "settings": {
+    "shortcuts": {
+      "micMute": "Ctrl+Alt+M",
+      "appMute": "Ctrl+Alt+A",
+      "routing": "Ctrl+Alt+S"
+    },
+    "startWithWindows": true,
+    "minimizeToTray": true
+  },
+  "status": {
+    "state": "stopped",
+    "message": "Routing stopped",
+    "meters": {
+      "micPeaks": {},
+      "appPeaks": {},
+      "outputPeak": 0.0
+    },
+    "warnings": []
+  }
+}

@@ -23,10 +23,3 @@ fn list_devices(flow: DeviceFlow) -> AudioResult<Vec<AudioDevice>> {
 fn list_devices(_flow: DeviceFlow) -> AudioResult<Vec<AudioDevice>> {
     Ok(Vec::new())
 }
-
-pub fn contains_device(devices: &[AudioDevice], id: &Option<String>) -> bool {
-    match id {
-        Some(id) => devices.iter().any(|device| &device.id == id),
-        None => false,
-    }
-}

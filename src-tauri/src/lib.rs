@@ -4,6 +4,8 @@ mod audio;
 #[cfg(feature = "app")]
 mod commands;
 mod config;
+mod persistence;
+mod service;
 #[cfg(all(feature = "app", windows))]
 mod single_instance;
 

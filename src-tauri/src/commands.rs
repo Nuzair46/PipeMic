@@ -1,4 +1,7 @@
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 
 use parking_lot::Mutex;
 use serde::Serialize;
@@ -11,10 +14,12 @@ use tauri::{
 use crate::{
     audio::{
         self,
+        discovery::Discovery,
         engine::AudioEngine,
         types::{AudioDevice, AudioSession, RouteStatus},
     },
-    config::{self, AppConfig, ControlUpdate},
+    config::{self, AppConfig, AppSettings, ControlUpdate},
+    service::RoutingService,
 };
 
 const SOURCE_URL: &str = "https://github.com/nuzair46/pipemic";
@@ -23,35 +28,67 @@ const TRAY_SHOW_ID: &str = "show";
 const TRAY_QUIT_ID: &str = "quit";
 
 pub struct PipeMicState {
-    config: Mutex<AppConfig>,
-    engine: Mutex<AudioEngine>,
+    service: Arc<Mutex<RoutingService<AudioEngine>>>,
+    discovery: Arc<Discovery>,
+    minimize_to_tray: Arc<AtomicBool>,
     quit_requested: AtomicBool,
 }
 
 impl PipeMicState {
     pub fn new() -> Self {
+        let discovery = Arc::new(Discovery::new());
+        let service = RoutingService::new(AudioEngine::new(Arc::clone(&discovery)));
+        let minimize_to_tray = Arc::new(AtomicBool::new(service.minimize_to_tray()));
         Self {
-            config: Mutex::new(config::load_config().unwrap_or_default()),
-            engine: Mutex::new(AudioEngine::default()),
+            service: Arc::new(Mutex::new(service)),
+            discovery,
+            minimize_to_tray,
             quit_requested: AtomicBool::new(false),
         }
     }
 
-    fn config_snapshot(&self) -> AppConfig {
-        self.config.lock().clone()
-    }
-
-    fn stop_routing(&self) {
-        self.engine.lock().stop();
+    fn config_snapshot(&self) -> Result<AppConfig, String> {
+        self.service.lock().config()
     }
 
     fn should_hide_on_close(&self) -> bool {
-        self.config.lock().minimize_to_tray && !self.quit_requested.load(Ordering::SeqCst)
+        self.minimize_to_tray.load(Ordering::Acquire)
+            && !self.quit_requested.load(Ordering::Acquire)
     }
+}
 
-    fn request_quit(&self) {
-        self.quit_requested.store(true, Ordering::SeqCst);
+fn request_quit(app: &tauri::AppHandle) {
+    let state = app.state::<PipeMicState>();
+    if state.quit_requested.swap(true, Ordering::AcqRel) {
+        return;
     }
+    let service = Arc::clone(&state.service);
+    let app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        if let Err(error) = service.lock().shutdown() {
+            eprintln!("Could not flush settings on exit: {error}");
+        }
+        app.exit(0);
+    });
+}
+
+async fn with_service<T: Send + 'static>(
+    state: State<'_, PipeMicState>,
+    action: impl FnOnce(&mut RoutingService<AudioEngine>) -> Result<T, String> + Send + 'static,
+) -> CommandResult<T> {
+    let service = Arc::clone(&state.service);
+    let minimize_to_tray = Arc::clone(&state.minimize_to_tray);
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut service = service.lock();
+        let result = action(&mut service);
+        minimize_to_tray.store(service.minimize_to_tray(), Ordering::Release);
+        result
+    })
+    .await
+    .map_err(|error| CommandError {
+        message: error.to_string(),
+    })?
+    .map_err(|message| CommandError { message })
 }
 
 #[derive(Debug, Serialize)]
@@ -95,15 +132,14 @@ enum StartupSettingsError {
 }
 
 pub fn setup_app(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
-    let config = app.state::<PipeMicState>().config_snapshot();
-    if let Err(error) = apply_startup_settings(&config) {
-        eprintln!("PipeMic startup setting warning: {error}");
-    }
-
     setup_tray(app)?;
-
-    if should_start_minimized(&config) {
-        hide_main_window(app.handle());
+    if let Ok(config) = app.state::<PipeMicState>().config_snapshot() {
+        if let Err(error) = apply_startup_settings(&config) {
+            eprintln!("PipeMic startup setting warning: {error}");
+        }
+        if should_start_minimized(&config) {
+            hide_main_window(app.handle());
+        }
     }
 
     Ok(())
@@ -116,81 +152,91 @@ pub fn handle_window_event(window: &tauri::Window, event: &tauri::WindowEvent) {
             api.prevent_close();
             let _ = window.hide();
         } else {
-            state.stop_routing();
+            api.prevent_close();
+            request_quit(window.app_handle());
         }
     }
 }
 
-#[tauri::command]
-pub fn list_capture_devices() -> CommandResult<Vec<AudioDevice>> {
-    Ok(audio::devices::list_capture_devices()?)
+async fn discovery(state: State<'_, PipeMicState>) -> CommandResult<audio::discovery::Snapshot> {
+    let discovery = Arc::clone(&state.discovery);
+    tauri::async_runtime::spawn_blocking(move || discovery.initial_snapshot())
+        .await
+        .map_err(|error| CommandError {
+            message: error.to_string(),
+        })
 }
 
 #[tauri::command]
-pub fn list_render_devices() -> CommandResult<Vec<AudioDevice>> {
-    Ok(audio::devices::list_render_devices()?)
+pub async fn list_capture_devices(
+    state: State<'_, PipeMicState>,
+) -> CommandResult<Vec<AudioDevice>> {
+    discovery(state)
+        .await?
+        .capture
+        .map_err(|message| CommandError { message })
 }
-
 #[tauri::command]
-pub fn list_sessions() -> CommandResult<Vec<AudioSession>> {
-    Ok(audio::sessions::list_sessions()?)
+pub async fn list_render_devices(
+    state: State<'_, PipeMicState>,
+) -> CommandResult<Vec<AudioDevice>> {
+    discovery(state)
+        .await?
+        .render
+        .map_err(|message| CommandError { message })
 }
-
 #[tauri::command]
-pub fn load_config(state: State<'_, PipeMicState>) -> AppConfig {
-    state.config.lock().clone()
+pub async fn list_sessions(state: State<'_, PipeMicState>) -> CommandResult<Vec<AudioSession>> {
+    discovery(state)
+        .await?
+        .sessions
+        .map_err(|message| CommandError { message })
 }
-
 #[tauri::command]
-pub fn save_config(config: AppConfig, state: State<'_, PipeMicState>) -> CommandResult<AppConfig> {
-    config::save_config(&config)?;
-    *state.config.lock() = config.clone();
-    Ok(config)
+pub async fn load_config(state: State<'_, PipeMicState>) -> CommandResult<AppConfig> {
+    with_service(state, move |service| service.config()).await
 }
-
 #[tauri::command]
-pub fn apply_app_settings(
+pub async fn save_config(
     config: AppConfig,
     state: State<'_, PipeMicState>,
 ) -> CommandResult<AppConfig> {
-    apply_startup_settings(&config)?;
-    config::save_config(&config)?;
-    *state.config.lock() = config.clone();
-    Ok(config)
+    with_service(state, move |service| service.save(config)).await
 }
-
 #[tauri::command]
-pub fn start_routing(
+pub async fn apply_app_settings(
+    config: AppSettings,
+    state: State<'_, PipeMicState>,
+) -> CommandResult<AppConfig> {
+    with_service(state, move |service| {
+        let mut next = service.config()?;
+        next.apply_settings(config.clone());
+        apply_startup_settings(&next).map_err(|error| error.to_string())?;
+        service.settings(config)
+    })
+    .await
+}
+#[tauri::command]
+pub async fn start_routing(
     config: AppConfig,
     state: State<'_, PipeMicState>,
 ) -> CommandResult<RouteStatus> {
-    config::save_config(&config)?;
-    *state.config.lock() = config.clone();
-    Ok(state.engine.lock().start(&config)?)
+    with_service(state, move |service| service.start(config)).await
 }
-
 #[tauri::command]
-pub fn stop_routing(state: State<'_, PipeMicState>) -> RouteStatus {
-    state.engine.lock().stop()
+pub async fn stop_routing(state: State<'_, PipeMicState>) -> CommandResult<RouteStatus> {
+    with_service(state, move |service| Ok(service.stop())).await
 }
-
 #[tauri::command]
-pub fn get_status(state: State<'_, PipeMicState>) -> RouteStatus {
-    state.engine.lock().current_status()
+pub async fn get_status(state: State<'_, PipeMicState>) -> CommandResult<RouteStatus> {
+    with_service(state, move |service| Ok(service.status())).await
 }
-
 #[tauri::command]
-pub fn update_controls(
+pub async fn update_controls(
     controls: ControlUpdate,
     state: State<'_, PipeMicState>,
 ) -> CommandResult<RouteStatus> {
-    let updated_config = {
-        let mut config = state.config.lock();
-        config.apply_controls(&controls);
-        config.clone()
-    };
-    config::save_config(&updated_config)?;
-    Ok(state.engine.lock().update_controls(&controls))
+    with_service(state, move |service| service.controls(controls)).await
 }
 
 #[tauri::command]
@@ -263,13 +309,7 @@ fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id().as_ref() {
             TRAY_SHOW_ID => show_main_window(app),
-            TRAY_QUIT_ID => {
-                if let Some(state) = app.try_state::<PipeMicState>() {
-                    state.request_quit();
-                    state.stop_routing();
-                }
-                app.exit(0);
-            }
+            TRAY_QUIT_ID => request_quit(app),
             _ => {}
         })
         .on_tray_icon_event(|tray, event| {
