@@ -42,4 +42,5 @@ jobs:
       - run: yarn install --frozen-lockfile
       - run: yarn build
       - run: cargo test --manifest-path src-tauri/Cargo.toml --locked
-      - run: yarn tauri build --bundles nsis -- --locked
+      # Invoke the installed CLI directly so Yarn 1 cannot consume Cargo's separator.
+      - run: node node_modules/@tauri-apps/cli/tauri.js build --bundles nsis -- --locked

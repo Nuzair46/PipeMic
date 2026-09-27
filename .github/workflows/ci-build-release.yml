@@ -147,7 +147,8 @@ jobs:
         run: cargo test --manifest-path src-tauri/Cargo.toml --locked
 
       - name: Build Windows app (NSIS)
-        run: yarn tauri build --bundles nsis -- --locked
+        # Invoke the installed CLI directly so Yarn 1 cannot consume Cargo's separator.
+        run: node node_modules/@tauri-apps/cli/tauri.js build --bundles nsis -- --locked
 
       - name: Upload release artifact
         uses: actions/upload-artifact@v4
