@@ -69,6 +69,7 @@ export interface AppConfig {
   shortcuts: ShortcutConfig;
   startWithWindows: boolean;
   minimizeToTray: boolean;
+  helloKittyMode: boolean;
 }
 
 export interface ShortcutConfig {
@@ -94,4 +95,4 @@ export interface UpdateCheckResult {
 }
 
 
-export type AppSettings = Pick<AppConfig, "shortcuts" | "startWithWindows" | "minimizeToTray">;
+export type AppSettings = Pick<AppConfig, "shortcuts" | "startWithWindows" | "minimizeToTray" | "helloKittyMode">;

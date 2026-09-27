@@ -22,6 +22,7 @@ export const defaultConfig: AppConfig = {
   },
   startWithWindows: true,
   minimizeToTray: true,
+  helloKittyMode: false,
 };
 
 export function controlsFromConfig(config: AppConfig): ControlUpdate {
@@ -48,7 +49,12 @@ export function applyPreferredOutput(config: AppConfig, renderDevices: AudioDevi
 
 
 export function settingsFromConfig(config: AppSettings): AppSettings {
-  return { shortcuts: { ...config.shortcuts }, startWithWindows: config.startWithWindows, minimizeToTray: config.minimizeToTray };
+  return {
+    shortcuts: { ...config.shortcuts },
+    startWithWindows: config.startWithWindows,
+    minimizeToTray: config.minimizeToTray,
+    helloKittyMode: config.helloKittyMode ?? false,
+  };
 }
 
 export function cloneAppConfig(config: AppConfig): AppConfig {

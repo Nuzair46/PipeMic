@@ -56,7 +56,7 @@ export function OutputPanel({
           {outputGuidance}
         </p>
 
-        <div className="grid gap-3 border-y border-border py-4">
+        <div className="master-controls grid gap-3 border-y border-border py-4">
           <div className="flex items-center justify-between gap-3">
             <span className="text-xs font-medium text-muted-foreground">Master</span>
             <span className="font-mono text-xs text-foreground">{formatGain(masterGain)}</span>

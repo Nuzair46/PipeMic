@@ -72,7 +72,7 @@ export function SettingsDialog({ open, config, onOpenChange, onConfigChange, onS
     return () => window.removeEventListener("keydown", onKeyDown, true);
   }, [config, onConfigChange, recording]);
 
-  const setChecked = (key: "startWithWindows" | "minimizeToTray", checked: boolean) => {
+  const setChecked = (key: "startWithWindows" | "minimizeToTray" | "helloKittyMode", checked: boolean) => {
     onConfigChange({ ...config, [key]: checked });
   };
 
@@ -81,10 +81,18 @@ export function SettingsDialog({ open, config, onOpenChange, onConfigChange, onS
       <DialogContent>
         <DialogHeader>
           <DialogTitle>Settings</DialogTitle>
-          <DialogDescription>Configure shortcuts and startup behavior.</DialogDescription>
+          <DialogDescription>Configure appearance, shortcuts, and startup behavior.</DialogDescription>
         </DialogHeader>
 
         <div className="grid max-h-[calc(100vh-220px)] gap-5 overflow-y-auto px-5 py-5">
+          <section className="grid gap-2">
+            <h3 className="text-xs font-medium text-muted-foreground">Appearance</h3>
+            <SwitchRow
+              label="Hello Kitty mode"
+              checked={config.helloKittyMode}
+              onCheckedChange={(checked) => setChecked("helloKittyMode", checked)}
+            />
+          </section>
           <section className="grid gap-3">
             <h3 className="text-xs font-medium text-muted-foreground">Shortcuts</h3>
             <div className="grid gap-2">

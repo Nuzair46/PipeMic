@@ -53,6 +53,8 @@ VB-CABLE: https://www.vb-cable.com
 6. Click `Start`
 7. Adjust source gain, mute buttons, and master gain as needed
 
+For a pink theme with Hello Kitty artwork and rounded controls, open `Settings`, turn on `Hello Kitty mode` under `Appearance`, and click `Save`. It is off by default and remembers your choice across launches. Toggling previews the theme; `Cancel` restores your saved choice.
+
 ## Notes (Important)
 
 - Windows only

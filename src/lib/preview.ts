@@ -21,6 +21,7 @@ const defaultConfig: AppConfig = {
   },
   startWithWindows: true,
   minimizeToTray: true,
+  helloKittyMode: false,
 };
 
 const mockCaptureDevices: AudioDevice[] = [

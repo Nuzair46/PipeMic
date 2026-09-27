@@ -160,9 +160,11 @@ mod tests {
                 shortcuts: config.shortcuts,
                 start_with_windows: false,
                 minimize_to_tray: true,
+                hello_kitty_mode: true,
             })
             .unwrap();
         assert!(saved.mic_sources[0].muted);
+        assert!(saved.hello_kitty_mode);
         assert_eq!(saved.mic_sources[0].gain, 0.7);
         assert!(service.status().warnings[0].contains("disk full"));
     }

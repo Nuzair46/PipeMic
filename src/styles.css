@@ -20,6 +20,33 @@
     --border: 240 3.7% 15.9%;
     --input: 240 3.7% 15.9%;
     --ring: 240 4.9% 83.9%;
+    --radius: 4px;
+    --radius-lg: 8px;
+    --radius-md: 6px;
+    --radius-sm: 4px;
+  }
+
+  :root[data-theme="hello-kitty"] {
+    color-scheme: light;
+    --background: 350 100% 98%;
+    --foreground: 337 35% 21%;
+    --muted: 344 52% 88%;
+    --muted-foreground: 337 25% 36%;
+    --primary: 336 62% 39%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 343 70% 92%;
+    --secondary-foreground: 337 35% 21%;
+    --accent: 340 68% 88%;
+    --accent-foreground: 337 35% 21%;
+    --destructive: 355 71% 40%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 340 39% 74%;
+    --input: 340 39% 74%;
+    --ring: 336 62% 39%;
+    --radius: 8px;
+    --radius-lg: 20px;
+    --radius-md: 12px;
+    --radius-sm: 8px;
   }
 
   * {
@@ -56,4 +83,52 @@
     @apply flex h-11 items-center justify-between border-b bg-muted/25 px-4;
   }
 
+  :root[data-theme="hello-kitty"] .app-canvas {
+    background-color: #ffdbdd;
+  }
+
+  :root[data-theme="hello-kitty"] .mixer-shell {
+    background-color: #ffdbdd;
+    background-image: url("./assets/hello-kitty-background.png");
+    background-position: center bottom;
+    background-repeat: no-repeat;
+    background-size: 100% auto;
+    box-shadow: 0 2px 8px rgb(79 38 53 / 10%);
+  }
+
+  :root[data-theme="hello-kitty"] .sources-panel {
+    background-color: transparent;
+  }
+
+  :root[data-theme="hello-kitty"] .source-strip {
+    margin: 8px;
+    border: 1px solid hsl(var(--border));
+    border-radius: var(--radius-md);
+    background-color: hsl(var(--background) / 94%);
+  }
+
+  :root[data-theme="hello-kitty"] .panel-heading,
+  :root[data-theme="hello-kitty"] .source-section-heading {
+    background-color: hsl(var(--secondary) / 96%);
+  }
+
+  :root[data-theme="hello-kitty"] .master-controls {
+    padding: 12px;
+    border: 1px solid hsl(var(--border));
+    border-radius: var(--radius-md);
+    background-color: hsl(var(--background) / 94%);
+  }
+
+  :root[data-theme="hello-kitty"] .dialog-overlay {
+    background-color: hsl(var(--foreground) / 25%);
+  }
+
+  :root[data-theme="hello-kitty"] [role="switch"],
+  :root[data-theme="hello-kitty"] [role="switch"] > span {
+    border-radius: 9999px;
+  }
+
+  :root[data-theme="hello-kitty"] [role="meter"] {
+    box-shadow: none;
+  }
 }
