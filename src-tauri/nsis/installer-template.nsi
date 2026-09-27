@@ -691,6 +691,7 @@ Section Uninstall
 
     SetShellVarContext current
     RmDir /r "$APPDATA\${BUNDLEID}"
+    RmDir /r "$APPDATA\PipeMic"
     RmDir /r "$LOCALAPPDATA\${BUNDLEID}"
   ${EndIf}
 

@@ -10,12 +10,13 @@ use std::{
 use windows::{
     Win32::{
         Media::Audio::{
-            AUDCLNT_BUFFERFLAGS_SILENT, AUDCLNT_SHAREMODE_SHARED,
-            AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM, AUDCLNT_STREAMFLAGS_LOOPBACK,
-            AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY, AUDIOCLIENT_ACTIVATION_PARAMS,
-            AUDIOCLIENT_ACTIVATION_PARAMS_0, AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK,
-            AUDIOCLIENT_PROCESS_LOOPBACK_PARAMS, ActivateAudioInterfaceAsync,
-            IActivateAudioInterfaceAsyncOperation, IActivateAudioInterfaceCompletionHandler,
+            AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY, AUDCLNT_BUFFERFLAGS_SILENT,
+            AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM,
+            AUDCLNT_STREAMFLAGS_LOOPBACK, AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY,
+            AUDIOCLIENT_ACTIVATION_PARAMS, AUDIOCLIENT_ACTIVATION_PARAMS_0,
+            AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK, AUDIOCLIENT_PROCESS_LOOPBACK_PARAMS,
+            ActivateAudioInterfaceAsync, IActivateAudioInterfaceAsyncOperation,
+            IActivateAudioInterfaceCompletionHandler,
             IActivateAudioInterfaceCompletionHandler_Impl, IAudioCaptureClient, IAudioClient,
             IAudioRenderClient, PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE,
             VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK, WAVEFORMATEX, WAVEFORMATEXTENSIBLE,
@@ -23,7 +24,7 @@ use windows::{
         System::Com::CoTaskMemFree,
         System::Variant::VT_BLOB,
     },
-    core::{HRESULT, IUnknown, Interface, PROPVARIANT},
+    core::{AgileReference, HRESULT, IUnknown, Interface, PROPVARIANT},
 };
 
 use super::{
@@ -67,6 +68,7 @@ pub(crate) struct WasapiCapture {
     format: StreamFormat,
     pending: FrameSpillBuffer,
     diagnostics: CaptureDiagnostics,
+    _apartment: windows_wasapi::ComApartment,
 }
 
 pub(crate) struct WasapiRender {
@@ -75,19 +77,21 @@ pub(crate) struct WasapiRender {
     format: StreamFormat,
     buffer_frames: u32,
     downmix_to_mono: bool,
+    _apartment: windows_wasapi::ComApartment,
 }
 
 pub(crate) fn open_capture(spec: &CaptureSpec) -> AudioResult<Box<dyn AudioCapture>> {
     unsafe {
-        windows_wasapi::init_com();
-        let (client, format) =
-            initialize_capture_client(&spec.device_id, spec.frames_per_buffer)?;
-        let capture = client.GetService::<IAudioCaptureClient>().map_err(|error| {
-            AudioError::CaptureFailed(format!(
-                "microphone GetService(IAudioCaptureClient) failed: {}",
-                windows_error_detail(&error)
-            ))
-        })?;
+        let apartment = windows_wasapi::ComApartment::new()?;
+        let (client, format) = initialize_capture_client(&spec.device_id, spec.frames_per_buffer)?;
+        let capture = client
+            .GetService::<IAudioCaptureClient>()
+            .map_err(|error| {
+                AudioError::CaptureFailed(format!(
+                    "microphone GetService(IAudioCaptureClient) failed: {}",
+                    windows_error_detail(&error)
+                ))
+            })?;
         client.Start().map_err(|error| {
             AudioError::CaptureFailed(format!(
                 "microphone Start failed: {}",
@@ -100,16 +104,18 @@ pub(crate) fn open_capture(spec: &CaptureSpec) -> AudioResult<Box<dyn AudioCaptu
             capture,
             format,
             spec.frames_per_buffer,
+            apartment,
         )))
     }
 }
 
 pub(crate) fn open_process_loopback_capture(
     spec: &ProcessLoopbackSpec,
+    stop: &std::sync::atomic::AtomicBool,
 ) -> AudioResult<Box<dyn AudioCapture>> {
     unsafe {
-        windows_wasapi::init_com();
-        let client = activate_process_loopback_client(spec.process_id)?;
+        let apartment = windows_wasapi::ComApartment::new()?;
+        let client = activate_process_loopback_client(spec.process_id, stop)?;
         let format = initialize_process_loopback_client(&client, spec.frames_per_buffer)?;
         let capture = client
             .GetService::<IAudioCaptureClient>()
@@ -131,13 +137,14 @@ pub(crate) fn open_process_loopback_capture(
             capture,
             format,
             spec.frames_per_buffer,
+            apartment,
         )))
     }
 }
 
 pub(crate) fn open_render(spec: &RenderSpec) -> AudioResult<Box<dyn AudioRender>> {
     unsafe {
-        windows_wasapi::init_com();
+        let apartment = windows_wasapi::ComApartment::new()?;
         let (client, format) = initialize_render_client(&spec.device_id, spec.frames_per_buffer)?;
         let render = client.GetService::<IAudioRenderClient>().map_err(|error| {
             AudioError::Backend(format!(
@@ -159,13 +166,14 @@ pub(crate) fn open_render(spec: &RenderSpec) -> AudioResult<Box<dyn AudioRender>
             format,
             buffer_frames,
             downmix_to_mono: spec.downmix_to_mono,
+            _apartment: apartment,
         }))
     }
 }
 
 #[windows::core::implement(IActivateAudioInterfaceCompletionHandler)]
 struct ActivationHandler {
-    sender: StdMutex<Option<mpsc::Sender<Result<usize, String>>>>,
+    sender: StdMutex<Option<mpsc::Sender<Result<AgileReference<IAudioClient>, String>>>>,
 }
 
 #[allow(non_snake_case)]
@@ -174,7 +182,7 @@ impl IActivateAudioInterfaceCompletionHandler_Impl for ActivationHandler_Impl {
         &self,
         activateoperation: Option<&IActivateAudioInterfaceAsyncOperation>,
     ) -> windows_core::Result<()> {
-        let result = unsafe { activated_audio_client_raw(activateoperation) };
+        let result = unsafe { activated_audio_client(activateoperation) };
         if let Some(sender) = self.sender.lock().ok().and_then(|mut guard| guard.take()) {
             let _ = sender.send(result);
         }
@@ -182,9 +190,9 @@ impl IActivateAudioInterfaceCompletionHandler_Impl for ActivationHandler_Impl {
     }
 }
 
-unsafe fn activated_audio_client_raw(
+unsafe fn activated_audio_client(
     activateoperation: Option<&IActivateAudioInterfaceAsyncOperation>,
-) -> Result<usize, String> {
+) -> Result<AgileReference<IAudioClient>, String> {
     let operation = activateoperation.ok_or_else(|| {
         "process loopback activation callback did not include an operation".to_string()
     })?;
@@ -202,10 +210,13 @@ unsafe fn activated_audio_client_raw(
     let client: IAudioClient = unknown
         .cast()
         .map_err(|error| error.message().to_string())?;
-    Ok(client.into_raw() as usize)
+    AgileReference::new(&client).map_err(|error| error.to_string())
 }
 
-unsafe fn activate_process_loopback_client(process_id: u32) -> AudioResult<IAudioClient> {
+unsafe fn activate_process_loopback_client(
+    process_id: u32,
+    stop: &std::sync::atomic::AtomicBool,
+) -> AudioResult<IAudioClient> {
     let mut params = AUDIOCLIENT_ACTIVATION_PARAMS {
         ActivationType: AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK,
         Anonymous: AUDIOCLIENT_ACTIVATION_PARAMS_0 {
@@ -246,20 +257,8 @@ unsafe fn activate_process_loopback_client(process_id: u32) -> AudioResult<IAudi
         &handler,
     )?;
 
-    let raw_client = receiver
-        .recv_timeout(Duration::from_secs(5))
-        .map_err(|_| {
-            AudioError::CaptureFailed(format!(
-                "timed out activating process loopback for PID {process_id}"
-            ))
-        })?
-        .map_err(|message| {
-            AudioError::CaptureFailed(format!(
-                "failed to activate process loopback for PID {process_id}: {message}"
-            ))
-        })?;
-
-    Ok(IAudioClient::from_raw(raw_client as _))
+    let client = super::activation::receive(receiver, stop, Duration::from_secs(5))?;
+    Ok(client.resolve()?)
 }
 
 impl WasapiCapture {
@@ -268,6 +267,7 @@ impl WasapiCapture {
         capture: IAudioCaptureClient,
         format: StreamFormat,
         frames_per_buffer: usize,
+        apartment: windows_wasapi::ComApartment,
     ) -> Self {
         Self {
             client,
@@ -275,6 +275,7 @@ impl WasapiCapture {
             format,
             pending: FrameSpillBuffer::new(frames_per_buffer.saturating_mul(4)),
             diagnostics: CaptureDiagnostics::default(),
+            _apartment: apartment,
         }
     }
 
@@ -301,6 +302,9 @@ impl WasapiCapture {
 }
 
 impl AudioCapture for WasapiCapture {
+    fn sample_rate(&self) -> u32 {
+        self.format.sample_rate
+    }
     fn read_stereo(&mut self, output: &mut [StereoFrame]) -> AudioResult<usize> {
         unsafe {
             let requested = output.len();
@@ -333,6 +337,12 @@ impl AudioCapture for WasapiCapture {
                     return Err(error.into());
                 }
 
+                if flags & AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY.0 as u32 != 0 {
+                    self.diagnostics.discontinuities =
+                        self.diagnostics.discontinuities.saturating_add(1);
+                    // Discard frames preceding the new packet's timeline.
+                    written = 0;
+                }
                 let available = frames_to_read as usize;
                 let copy_frames = available.min(output.len() - written);
                 let spill_frames = available.saturating_sub(copy_frames);
@@ -349,7 +359,8 @@ impl AudioCapture for WasapiCapture {
                 } else {
                     let format = self.format;
                     for frame_index in 0..copy_frames {
-                        output[written + frame_index] = read_stereo_frame(data, frame_index, format);
+                        output[written + frame_index] =
+                            read_stereo_frame(data, frame_index, format);
                     }
                     if spill_frames > 0 {
                         self.pending.push_frames(
@@ -394,6 +405,12 @@ impl AudioCapture for WasapiCapture {
 }
 
 impl AudioRender for WasapiRender {
+    fn sample_rate(&self) -> u32 {
+        self.format.sample_rate
+    }
+    fn set_downmix(&mut self, mono: bool) {
+        self.downmix_to_mono = mono;
+    }
     fn write_stereo(&mut self, frames: &[StereoFrame]) -> AudioResult<usize> {
         unsafe {
             let padding = self.client.GetCurrentPadding()?;
@@ -437,7 +454,10 @@ unsafe fn initialize_capture_client(
     let mut failures = Vec::new();
     let desired = desired_float_stereo();
 
-    for (flags, label) in [(stream_flags(), "with conversion"), (0, "without conversion")] {
+    for (flags, label) in [
+        (stream_flags(), "with conversion"),
+        (0, "without conversion"),
+    ] {
         if let Some(result) = try_initialize_capture_format(
             device_id,
             &desired,
@@ -450,7 +470,10 @@ unsafe fn initialize_capture_client(
         }
     }
 
-    for (flags, label) in [(stream_flags(), "with conversion"), (0, "without conversion")] {
+    for (flags, label) in [
+        (stream_flags(), "with conversion"),
+        (0, "without conversion"),
+    ] {
         if let Some(result) = try_initialize_capture_mix_format(
             device_id,
             frames_per_buffer,
@@ -462,9 +485,9 @@ unsafe fn initialize_capture_client(
         }
     }
 
-    Err(AudioError::CaptureFailed(capture_initialize_failure_message(
-        &failures,
-    )))
+    Err(AudioError::CaptureFailed(
+        capture_initialize_failure_message(&failures),
+    ))
 }
 
 unsafe fn try_initialize_capture_format(
@@ -590,7 +613,10 @@ unsafe fn initialize_render_client(
     let mut failures = Vec::new();
     let desired = desired_float_stereo();
 
-    for (flags, label) in [(stream_flags(), "with conversion"), (0, "without conversion")] {
+    for (flags, label) in [
+        (stream_flags(), "with conversion"),
+        (0, "without conversion"),
+    ] {
         if let Some(result) = try_initialize_render_format(
             device_id,
             &desired,
@@ -603,7 +629,10 @@ unsafe fn initialize_render_client(
         }
     }
 
-    for (flags, label) in [(stream_flags(), "with conversion"), (0, "without conversion")] {
+    for (flags, label) in [
+        (stream_flags(), "with conversion"),
+        (0, "without conversion"),
+    ] {
         if let Some(result) = try_initialize_render_mix_format(
             device_id,
             frames_per_buffer,
@@ -615,7 +644,9 @@ unsafe fn initialize_render_client(
         }
     }
 
-    Err(AudioError::Backend(render_initialize_failure_message(&failures)))
+    Err(AudioError::Backend(render_initialize_failure_message(
+        &failures,
+    )))
 }
 
 unsafe fn try_initialize_render_format(
@@ -745,7 +776,10 @@ fn windows_error_detail(error: &windows::core::Error) -> String {
 }
 
 fn render_initialize_failure_message(failures: &[String]) -> String {
-    if failures.iter().any(|failure| failure.contains(AUDCLNT_E_DEVICE_IN_USE)) {
+    if failures
+        .iter()
+        .any(|failure| failure.contains(AUDCLNT_E_DEVICE_IN_USE))
+    {
         return "Virtual mic is busy (HRESULT 0x8889000A). Close apps using CABLE Input or CABLE Output, or disable exclusive mode for both VB-CABLE endpoints in Windows Sound settings, then start PipeMic again.".to_string();
     }
 
@@ -849,6 +883,19 @@ unsafe fn stream_format_from_wave(format: &WAVEFORMATEX) -> AudioResult<StreamFo
     let bits_per_sample = format.wBitsPerSample;
     let block_align = format.nBlockAlign;
     let tag = format.wFormatTag;
+
+    if channels == 0
+        || channels > 32
+        || !(8_000..=384_000).contains(&sample_rate)
+        || block_align < channels.saturating_mul(bits_per_sample / 8)
+        || (tag == WAVE_FORMAT_EXTENSIBLE_TAG
+            && (format.cbSize as usize)
+                < mem::size_of::<WAVEFORMATEXTENSIBLE>() - mem::size_of::<WAVEFORMATEX>())
+    {
+        return Err(AudioError::CaptureFailed(
+            "Invalid WASAPI stream format".into(),
+        ));
+    }
 
     let kind = if tag == WAVE_FORMAT_IEEE_FLOAT_TAG && bits_per_sample == 32 {
         SampleKind::Float32

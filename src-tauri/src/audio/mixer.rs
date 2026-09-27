@@ -95,25 +95,24 @@ pub struct SourceMix<'a> {
     pub muted: bool,
 }
 
-pub fn source_control<'a>(controls: &'a [SourceControl], id: &str) -> SourceControl {
-    controls
-        .iter()
-        .find(|control| control.id == id)
-        .cloned()
-        .unwrap_or_else(|| SourceControl {
-            id: id.to_string(),
-            gain: 1.0,
-            muted: false,
-        })
-}
-
+#[cfg(test)]
 pub fn mix_source_frames(
     sources: &[SourceMix<'_>],
     frame_count: usize,
     master_gain: f32,
 ) -> Vec<StereoFrame> {
-    let master_gain = master_gain.max(0.0);
     let mut mixed = vec![[0.0, 0.0]; frame_count];
+    mix_into(sources.iter().copied(), &mut mixed, master_gain);
+    mixed
+}
+
+pub fn mix_into<'a>(
+    sources: impl IntoIterator<Item = SourceMix<'a>>,
+    mixed: &mut [StereoFrame],
+    master_gain: f32,
+) {
+    let master_gain = master_gain.max(0.0);
+    mixed.fill([0.0; 2]);
 
     for source in sources {
         if source.muted {
@@ -128,12 +127,10 @@ pub fn mix_source_frames(
         }
     }
 
-    for frame in &mut mixed {
+    for frame in mixed {
         frame[0] = (frame[0] * master_gain).clamp(-1.0, 1.0);
         frame[1] = (frame[1] * master_gain).clamp(-1.0, 1.0);
     }
-
-    mixed
 }
 
 pub fn peak(frames: &[StereoFrame]) -> f32 {

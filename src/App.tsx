@@ -7,94 +7,28 @@ import {
   isVbCableDevice,
   micSourceId,
   outputDevicesForPicker,
-  preferredOutputDevice,
-  type AppConfig,
   type AppSourceConfig,
-  type AudioDevice,
-  type AudioSession,
-  type ControlUpdate,
+  type AppSettings,
   type MicSourceConfig,
-  type RouteStatus,
   type UpdateCheckResult,
 } from "@/lib/api";
 import { AppHeader } from "@/components/app/AppHeader";
 import { OutputPanel } from "@/components/app/OutputPanel";
-import { SettingsDialog, cloneAppConfig, settingsValidationError } from "@/components/app/SettingsDialog";
+import { SettingsDialog, settingsValidationError } from "@/components/app/SettingsDialog";
 import { SourcesPanel } from "@/components/app/SourcesPanel";
 import { isSelectableSession, savedDisplayName, uniqueSessionsByExecutable } from "@/components/app/source-labels";
 import { ToastProvider, ToastStack, type AppToast, type ToastTone } from "@/components/ui/toast";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { useMixer } from "@/lib/use-mixer";
+import { defaultConfig, settingsFromConfig } from "@/lib/config";
 import { registerHotkeys } from "@/lib/hotkeys";
 
-const stoppedStatus: RouteStatus = {
-  state: "stopped",
-  message: "Routing stopped",
-  meters: { micPeaks: {}, appPeaks: {}, outputPeak: 0 },
-  warnings: [],
-};
-
-const defaultConfig: AppConfig = {
-  micSources: [],
-  appSources: [],
-  outputDeviceId: null,
-  masterGain: 1,
-  bufferFrames: 960,
-  downmixToMono: true,
-  shortcuts: {
-    micMute: "Ctrl+Alt+M",
-    appMute: "Ctrl+Alt+A",
-    routing: "Ctrl+Alt+S",
-  },
-  startWithWindows: true,
-  minimizeToTray: true,
-};
-
-function controlsFromConfig(config: AppConfig): ControlUpdate {
-  return {
-    micSources: config.micSources.map(({ id, gain, muted }) => ({ id, gain, muted })),
-    appSources: config.appSources.map(({ id, gain, muted }) => ({ id, gain, muted })),
-    masterGain: config.masterGain,
-    downmixToMono: config.downmixToMono,
-  };
-}
-
-function applyPreferredOutput(config: AppConfig, renderDevices: AudioDevice[]) {
-  const selectableRenderDevices = outputDevicesForPicker(renderDevices);
-  const selectedOutputExists = Boolean(
-    config.outputDeviceId && selectableRenderDevices.some((device) => device.id === config.outputDeviceId),
-  );
-  if (selectedOutputExists || !selectableRenderDevices.length) {
-    return config;
-  }
-
-  const preferred = preferredOutputDevice(selectableRenderDevices);
-  return preferred ? { ...config, outputDeviceId: preferred.id } : config;
-}
-
 export default function App() {
-  const [captureDevices, setCaptureDevices] = useState<AudioDevice[]>([]);
-  const [renderDevices, setRenderDevices] = useState<AudioDevice[]>([]);
-  const [sessions, setSessions] = useState<AudioSession[]>([]);
-  const [config, setConfig] = useState<AppConfig>(defaultConfig);
-  const [status, setStatus] = useState<RouteStatus>(stoppedStatus);
-  const [booting, setBooting] = useState(true);
   const [toasts, setToasts] = useState<AppToast[]>([]);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [draftConfig, setDraftConfig] = useState<AppConfig>(defaultConfig);
+  const [draftConfig, setDraftConfig] = useState<AppSettings>(settingsFromConfig(defaultConfig));
   const [updateCheck, setUpdateCheck] = useState<UpdateCheckResult>(initialUpdateCheck);
-
-  const configRef = useRef(config);
-  const statusRef = useRef(status);
-  const lastStatusToastRef = useRef("");
   const toastIdRef = useRef(1);
-
-  useEffect(() => {
-    configRef.current = config;
-  }, [config]);
-
-  useEffect(() => {
-    statusRef.current = status;
-  }, [status]);
 
   const pushToast = useCallback((title: string, description?: string, tone: ToastTone = "info") => {
     const id = toastIdRef.current++;
@@ -104,6 +38,15 @@ export default function App() {
   const dismissToast = useCallback((id: number) => {
     setToasts((current) => current.filter((toast) => toast.id !== id));
   }, []);
+
+  const onError = useCallback((title: string, message: string) => pushToast(title, message, "fail"), [pushToast]);
+  const { config, status, captureDevices, renderDevices, sessions, ready, controller } = useMixer(onError);
+  const booting = !ready;
+  const applyControlsConfig = controller.changeControls;
+  const applyTopologyConfig = controller.changeTopology;
+  const start = controller.start;
+  const stop = controller.stop;
+  const toggleRouting = controller.toggleRouting;
 
   useEffect(() => {
     let alive = true;
@@ -138,42 +81,10 @@ export default function App() {
     [config.appSources, selectableSessions],
   );
 
-  useEffect(() => {
-    if (status.state === "stopped") {
-      lastStatusToastRef.current = "";
-      return;
-    }
-
-    if (status.state !== "captureFailed" && status.state !== "deviceMissing") {
-      return;
-    }
-
-    const warning = status.warnings[0] ?? "";
-    const key = `${status.state}:${status.message}:${warning}`;
-    if (key === lastStatusToastRef.current) {
-      return;
-    }
-    lastStatusToastRef.current = key;
-    pushToast(status.message, warning || undefined, "fail");
-  }, [pushToast, status]);
-
-  const saveConfig = useCallback(
-    async (next: AppConfig) => {
-      try {
-        await api.saveConfig(next);
-        return true;
-      } catch (error) {
-        pushToast("Could not save settings", error instanceof Error ? error.message : String(error), "fail");
-        return false;
-      }
-    },
-    [pushToast],
-  );
-
   const openSettings = useCallback(() => {
-    setDraftConfig(cloneAppConfig(configRef.current));
+    setDraftConfig(settingsFromConfig(controller.getSnapshot().config));
     setSettingsOpen(true);
-  }, []);
+  }, [controller]);
 
   const saveSettings = useCallback(async () => {
     const error = settingsValidationError(draftConfig.shortcuts);
@@ -183,185 +94,18 @@ export default function App() {
     }
 
     try {
-      const next = await api.applyAppSettings(draftConfig);
-      configRef.current = next;
-      setConfig(next);
-      setDraftConfig(cloneAppConfig(next));
+      await controller.saveSettings(draftConfig);
       setSettingsOpen(false);
       pushToast("Settings saved", undefined, "success");
     } catch (error) {
       pushToast("Could not save settings", error instanceof Error ? error.message : String(error), "fail");
     }
-  }, [draftConfig, pushToast]);
-
-  const applyControlsConfig = useCallback(
-    (patch: Partial<AppConfig>) => {
-      const next = { ...configRef.current, ...patch };
-      configRef.current = next;
-      setConfig(next);
-      void saveConfig(next);
-      void api
-        .updateControls(controlsFromConfig(next))
-        .then(setStatus)
-        .catch((error) => {
-          const message = error instanceof Error ? error.message : String(error);
-          setStatus({
-            state: "captureFailed",
-            message,
-            meters: statusRef.current.meters,
-            warnings: [],
-          });
-          pushToast("Could not update controls", message, "fail");
-        });
-    },
-    [pushToast, saveConfig],
-  );
-
-  const applyTopologyConfig = useCallback(
-    (patch: Partial<AppConfig>) => {
-      const wasRunning = isRunning(statusRef.current);
-      const next = { ...configRef.current, ...patch };
-      configRef.current = next;
-      setConfig(next);
-      void saveConfig(next)
-        .then((saved) => {
-          if (!saved) {
-            return undefined;
-          }
-          if (!wasRunning) {
-            return undefined;
-          }
-          return api.startRouting(next).then(setStatus);
-        })
-        .catch((error) => {
-          pushToast("Could not update routing", error instanceof Error ? error.message : String(error), "fail");
-        });
-    },
-    [pushToast, saveConfig],
-  );
-
-  const refreshDevices = useCallback(async () => {
-    try {
-      const [capture, render, appSessions, currentStatus] = await Promise.all([
-        api.listCaptureDevices(),
-        api.listRenderDevices(),
-        api.listSessions(),
-        api.getStatus(),
-      ]);
-
-      setCaptureDevices(capture);
-      setRenderDevices(render);
-      setSessions(appSessions);
-      setStatus(currentStatus);
-
-      setConfig((current) => {
-        const next = applyPreferredOutput(current, render);
-        const changed = next !== current;
-        configRef.current = next;
-        if (changed) {
-          void saveConfig(next);
-        }
-        return changed ? next : current;
-      });
-    } catch (error) {
-      pushToast("Could not refresh devices", error instanceof Error ? error.message : String(error), "fail");
-    }
-  }, [pushToast, saveConfig]);
-
-  useEffect(() => {
-    let alive = true;
-    void (async () => {
-      try {
-        const [savedConfig, capture, render, appSessions, currentStatus] = await Promise.all([
-          api.loadConfig(),
-          api.listCaptureDevices(),
-          api.listRenderDevices(),
-          api.listSessions(),
-          api.getStatus(),
-        ]);
-        if (!alive) {
-          return;
-        }
-        const nextConfig = applyPreferredOutput(savedConfig, render);
-        configRef.current = nextConfig;
-        setConfig(nextConfig);
-        setCaptureDevices(capture);
-        setRenderDevices(render);
-        setSessions(appSessions);
-        setStatus(currentStatus);
-        if (nextConfig !== savedConfig) {
-          void saveConfig(nextConfig);
-        }
-      } catch (error) {
-        if (alive) {
-          pushToast("PipeMic could not load devices", error instanceof Error ? error.message : String(error), "fail");
-        }
-      } finally {
-        if (alive) {
-          setBooting(false);
-        }
-      }
-    })();
-
-    return () => {
-      alive = false;
-    };
-  }, [pushToast, saveConfig]);
-
-  useEffect(() => {
-    if (!booting) {
-      void refreshDevices();
-    }
-  }, [booting, refreshDevices]);
-
-  useEffect(() => {
-    const timer = window.setInterval(() => {
-      void api.getStatus().then(setStatus).catch((error) => {
-        pushToast("Could not read routing status", error instanceof Error ? error.message : String(error), "fail");
-      });
-    }, isRunning(status) ? 80 : 1000);
-
-    return () => window.clearInterval(timer);
-  }, [pushToast, status]);
-
-  useEffect(() => {
-    const timer = window.setInterval(() => {
-      void api.listSessions().then(setSessions).catch(() => undefined);
-    }, 1200);
-
-    return () => window.clearInterval(timer);
-  }, []);
-
-  const start = useCallback(async () => {
-    try {
-      const next = await api.startRouting(configRef.current);
-      setStatus(next);
-    } catch (error) {
-      pushToast("Could not start routing", error instanceof Error ? error.message : String(error), "fail");
-    }
-  }, [pushToast]);
-
-  const stop = useCallback(async () => {
-    try {
-      const next = await api.stopRouting();
-      setStatus(next);
-    } catch (error) {
-      pushToast("Could not stop routing", error instanceof Error ? error.message : String(error), "fail");
-    }
-  }, [pushToast]);
-
-  const toggleRouting = useCallback(() => {
-    if (isRunning(statusRef.current)) {
-      void stop();
-    } else {
-      void start();
-    }
-  }, [start, stop]);
+  }, [controller, draftConfig, pushToast]);
 
   const updateMicSource = useCallback(
     (sourceId: string, patch: Partial<Pick<MicSourceConfig, "gain" | "muted">>) => {
       applyControlsConfig({
-        micSources: configRef.current.micSources.map((source) => (source.id === sourceId ? { ...source, ...patch } : source)),
+        micSources: controller.getSnapshot().config.micSources.map((source) => (source.id === sourceId ? { ...source, ...patch } : source)),
       });
     },
     [applyControlsConfig],
@@ -370,14 +114,14 @@ export default function App() {
   const updateAppSource = useCallback(
     (sourceId: string, patch: Partial<Pick<AppSourceConfig, "gain" | "muted">>) => {
       applyControlsConfig({
-        appSources: configRef.current.appSources.map((source) => (source.id === sourceId ? { ...source, ...patch } : source)),
+        appSources: controller.getSnapshot().config.appSources.map((source) => (source.id === sourceId ? { ...source, ...patch } : source)),
       });
     },
     [applyControlsConfig],
   );
 
   const toggleMicMute = useCallback(() => {
-    const sources = configRef.current.micSources;
+    const sources = controller.getSnapshot().config.micSources;
     if (!sources.length) {
       return;
     }
@@ -386,7 +130,7 @@ export default function App() {
   }, [applyControlsConfig]);
 
   const toggleAppMute = useCallback(() => {
-    const sources = configRef.current.appSources;
+    const sources = controller.getSnapshot().config.appSources;
     if (!sources.length) {
       return;
     }
@@ -395,6 +139,7 @@ export default function App() {
   }, [applyControlsConfig]);
 
   useEffect(() => {
+    if (!ready) return;
     let disposed = false;
     let cleanup: (() => void) | undefined;
     void registerHotkeys(config.shortcuts, { toggleMicMute, toggleAppMute, toggleRouting }).then((dispose) => {
@@ -409,16 +154,16 @@ export default function App() {
       disposed = true;
       cleanup?.();
     };
-  }, [config.shortcuts, toggleAppMute, toggleMicMute, toggleRouting]);
+  }, [ready, config.shortcuts, toggleAppMute, toggleMicMute, toggleRouting]);
 
   const addMicSource = useCallback(
     (deviceId: string) => {
-      if (configRef.current.micSources.some((source) => source.deviceId === deviceId)) {
+      if (controller.getSnapshot().config.micSources.some((source) => source.deviceId === deviceId)) {
         return;
       }
       applyTopologyConfig({
         micSources: [
-          ...configRef.current.micSources,
+          ...controller.getSnapshot().config.micSources,
           {
             id: micSourceId(deviceId),
             deviceId,
@@ -434,12 +179,12 @@ export default function App() {
   const addAppSource = useCallback(
     (sessionId: string) => {
       const session = sessions.find((item) => item.id === sessionId);
-      if (!session || configRef.current.appSources.some((source) => source.executable.toLowerCase() === session.executable.toLowerCase())) {
+      if (!session || controller.getSnapshot().config.appSources.some((source) => source.executable.toLowerCase() === session.executable.toLowerCase())) {
         return;
       }
       applyTopologyConfig({
         appSources: [
-          ...configRef.current.appSources,
+          ...controller.getSnapshot().config.appSources,
           {
             id: appSourceId(session.executable),
             executable: session.executable,
@@ -455,19 +200,19 @@ export default function App() {
 
   const removeMicSource = useCallback(
     (sourceId: string) => {
-      applyTopologyConfig({ micSources: configRef.current.micSources.filter((source) => source.id !== sourceId) });
+      applyTopologyConfig({ micSources: controller.getSnapshot().config.micSources.filter((source) => source.id !== sourceId) });
     },
     [applyTopologyConfig],
   );
 
   const removeAppSource = useCallback(
     (sourceId: string) => {
-      applyTopologyConfig({ appSources: configRef.current.appSources.filter((source) => source.id !== sourceId) });
+      applyTopologyConfig({ appSources: controller.getSnapshot().config.appSources.filter((source) => source.id !== sourceId) });
     },
     [applyTopologyConfig],
   );
 
-  const canStart = Boolean(config.outputDeviceId && (config.micSources.length || config.appSources.length));
+  const canStart = Boolean(ready && config.outputDeviceId && (config.micSources.length || config.appSources.length));
   const openSource = useCallback(() => {
     void api.openSourceUrl().catch((error) => {
       pushToast("Could not open GitHub", error instanceof Error ? error.message : String(error), "fail");

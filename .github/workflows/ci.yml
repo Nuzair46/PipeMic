@@ -1,0 +1,45 @@
+name: Validate
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  core:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: yarn
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> src-tauri/target
+      - run: yarn install --frozen-lockfile
+      - run: yarn version:bump --check
+      - run: yarn test
+      - run: yarn build
+      - run: cargo test --manifest-path src-tauri/Cargo.toml --lib --no-default-features --locked
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: yarn
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> src-tauri/target
+      - run: yarn install --frozen-lockfile
+      - run: yarn build
+      - run: cargo test --manifest-path src-tauri/Cargo.toml --locked
+      - run: yarn tauri build --bundles nsis -- --locked

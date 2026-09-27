@@ -89,6 +89,22 @@ pub struct ShortcutConfig {
     pub routing: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppSettings {
+    pub shortcuts: ShortcutConfig,
+    pub start_with_windows: bool,
+    pub minimize_to_tray: bool,
+}
+
+impl AppConfig {
+    pub fn apply_settings(&mut self, settings: AppSettings) {
+        self.shortcuts = sanitize_shortcuts(settings.shortcuts);
+        self.start_with_windows = settings.start_with_windows;
+        self.minimize_to_tray = settings.minimize_to_tray;
+    }
+}
+
 impl Default for ShortcutConfig {
     fn default() -> Self {
         Self {
@@ -383,22 +399,37 @@ fn app_config_dir() -> PathBuf {
         .join("PipeMic")
 }
 
-pub fn load_config() -> Result<AppConfig, ConfigError> {
-    load_config_from_path(&config_file_path())
+#[cfg(test)]
+fn load_config_from_path(path: &Path) -> Result<AppConfig, ConfigError> {
+    load_config_with_recovery(path).map(|(config, _)| config)
 }
 
-pub fn save_config(config: &AppConfig) -> Result<(), ConfigError> {
-    save_config_to_path(config, &config_file_path())
-}
-
-pub fn load_config_from_path(path: &Path) -> Result<AppConfig, ConfigError> {
-    if !path.exists() {
-        return Ok(AppConfig::default());
+pub fn load_config_with_recovery(path: &Path) -> Result<(AppConfig, Option<String>), ConfigError> {
+    let backup = path.with_extension("json.bak");
+    match read_config(path) {
+        Ok(config) => Ok((config, None)),
+        Err(error) => match read_config(&backup) {
+            Ok(config) => Ok((
+                config,
+                Some(format!("Recovered settings from backup: {error}")),
+            )),
+            Err(backup_error) => {
+                let missing = |error: &ConfigError| matches!(error, ConfigError::Read(io) if io.kind() == io::ErrorKind::NotFound);
+                if missing(&error) && missing(&backup_error) {
+                    Ok((AppConfig::default(), None))
+                } else if missing(&error) {
+                    Err(backup_error)
+                } else {
+                    Err(error)
+                }
+            }
+        },
     }
+}
 
-    let raw = fs::read_to_string(path)?;
-    let raw_config: RawAppConfig = serde_json::from_str(&raw)?;
-    Ok(raw_config.into())
+fn read_config(path: &Path) -> Result<AppConfig, ConfigError> {
+    let raw: RawAppConfig = serde_json::from_str(&fs::read_to_string(path)?)?;
+    Ok(raw.into())
 }
 
 pub fn save_config_to_path(config: &AppConfig, path: &Path) -> Result<(), ConfigError> {
@@ -406,14 +437,78 @@ pub fn save_config_to_path(config: &AppConfig, path: &Path) -> Result<(), Config
         fs::create_dir_all(parent)?;
     }
 
-    let raw = serde_json::to_string_pretty(config)?;
-    fs::write(path, raw)?;
+    // Never replace a valid backup with a corrupt primary file.
+    if let Ok(previous) = read_config(path) {
+        crate::persistence::atomic_write(
+            &path.with_extension("json.bak"),
+            &serde_json::to_vec_pretty(&previous)?,
+        )?;
+    } else if read_config(&path.with_extension("json.bak")).is_err() {
+        crate::persistence::atomic_write(
+            &path.with_extension("json.bak"),
+            &serde_json::to_vec_pretty(config)?,
+        )?;
+    }
+    crate::persistence::atomic_write(path, &serde_json::to_vec_pretty(config)?)?;
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn corrupt_primary_recovers_without_destroying_the_backup() {
+        let path = temp_config_path("recover");
+        let config = AppConfig {
+            master_gain: 0.6,
+            ..AppConfig::default()
+        };
+        save_config_to_path(&config, &path).unwrap();
+        fs::write(&path, "{truncated").unwrap();
+        let (recovered, warning) = load_config_with_recovery(&path).unwrap();
+        assert_eq!(recovered, config);
+        assert!(warning.unwrap().contains("Recovered settings"));
+        let next = AppConfig {
+            master_gain: 0.8,
+            ..config.clone()
+        };
+        save_config_to_path(&next, &path).unwrap();
+        assert_eq!(read_config(&path).unwrap(), next);
+        assert_eq!(
+            read_config(&path.with_extension("json.bak")).unwrap(),
+            config
+        );
+        let _ = fs::remove_file(&path);
+        let _ = fs::remove_file(path.with_extension("json.bak"));
+    }
+
+    #[test]
+    fn corrupt_config_without_a_backup_is_an_error_not_defaults() {
+        let path = temp_config_path("corrupt");
+        fs::write(&path, "{truncated").unwrap();
+        assert!(load_config_from_path(&path).is_err());
+        assert_eq!(fs::read_to_string(&path).unwrap(), "{truncated");
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn shared_ipc_fixture_matches_rust_serialization() {
+        let fixture: serde_json::Value =
+            serde_json::from_str(include_str!("../../tests/fixtures/ipc.json")).unwrap();
+        let config: AppConfig = serde_json::from_value(fixture["config"].clone()).unwrap();
+        assert_eq!(serde_json::to_value(&config).unwrap(), fixture["config"]);
+        assert_eq!(
+            serde_json::to_value(ControlUpdate::from(&config)).unwrap(),
+            fixture["controls"]
+        );
+        assert_eq!(
+            serde_json::to_value(crate::audio::types::RouteStatus::default()).unwrap(),
+            fixture["status"]
+        );
+        let settings: AppSettings = serde_json::from_value(fixture["settings"].clone()).unwrap();
+        assert_eq!(serde_json::to_value(settings).unwrap(), fixture["settings"]);
+    }
 
     fn temp_config_path(name: &str) -> PathBuf {
         let id = format!(

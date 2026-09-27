@@ -8,6 +8,7 @@ const VERSION_FILES = {
   packageJson: path.join(rootDir, "package.json"),
   tauriConf: path.join(rootDir, "src-tauri", "tauri.conf.json"),
   cargoTauri: path.join(rootDir, "src-tauri", "Cargo.toml"),
+  cargoLock: path.join(rootDir, "src-tauri", "Cargo.lock"),
 };
 
 const HELP = `Usage:
@@ -74,8 +75,15 @@ function readVersions() {
   return {
     "package.json": String(parseJson(VERSION_FILES.packageJson).version ?? ""),
     "src-tauri/Cargo.toml": parseCargoPackageVersion(VERSION_FILES.cargoTauri),
+    "src-tauri/Cargo.lock": lockPackage()[1],
     "src-tauri/tauri.conf.json": String(parseJson(VERSION_FILES.tauriConf).version ?? ""),
   };
+}
+
+function lockPackage() {
+  const match = readText(VERSION_FILES.cargoLock).match(/\[\[package\]\]\r?\nname = "pipemic"\r?\nversion = "([^"]+)"/);
+  if (!match) throw new Error("Could not find PipeMic in Cargo.lock");
+  return match;
 }
 
 function ensureVersionsSynced(versions) {
@@ -168,6 +176,8 @@ function main() {
 
   updateJsonVersion(VERSION_FILES.packageJson, nextVersion);
   replaceCargoPackageVersion(VERSION_FILES.cargoTauri, nextVersion);
+  const locked = lockPackage();
+  writeText(VERSION_FILES.cargoLock, readText(VERSION_FILES.cargoLock).replace(locked[0], locked[0].replace(`version = "${locked[1]}"`, `version = "${nextVersion}"`)));
   updateJsonVersion(VERSION_FILES.tauriConf, nextVersion);
 
   console.log(`Bumped version: ${currentVersion} -> ${nextVersion}`);
@@ -175,6 +185,7 @@ function main() {
   for (const file of [
     "package.json",
     "src-tauri/Cargo.toml",
+    "src-tauri/Cargo.lock",
     "src-tauri/tauri.conf.json",
   ]) {
     console.log(`  - ${file}`);

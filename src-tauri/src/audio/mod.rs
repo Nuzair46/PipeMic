@@ -1,8 +1,13 @@
+pub mod activation;
+pub mod buffer;
 pub mod capture;
 pub mod devices;
+pub mod discovery;
 pub mod engine;
 pub mod mixer;
 pub mod render;
+pub mod resample;
+pub mod runtime;
 pub mod sessions;
 pub mod types;
 

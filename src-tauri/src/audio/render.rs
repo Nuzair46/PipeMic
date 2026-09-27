@@ -32,6 +32,11 @@ impl RenderSpec {
 }
 
 pub trait AudioRender {
+    /// Frames written to this endpoint use its negotiated rate.
+    fn sample_rate(&self) -> u32 {
+        SAMPLE_RATE
+    }
+    fn set_downmix(&mut self, _mono: bool) {}
     fn write_stereo(&mut self, frames: &[StereoFrame]) -> AudioResult<usize>;
 }
 
