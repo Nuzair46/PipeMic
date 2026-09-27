@@ -1,5 +1,12 @@
-import type { AppConfig, AppSettings, AudioDevice, ControlUpdate, RouteStatus } from "./types";
+import type { AppConfig, AppSettings, AudioDevice, ControlUpdate, RouteStatus, ToneConfig } from "./types";
 import { outputDevicesForPicker, preferredOutputDevice } from "./devices";
+
+export const neutralTone: ToneConfig = { x: 0, y: 0, bypassed: false };
+
+export function normalizeTone(tone?: Partial<ToneConfig>): ToneConfig {
+  const axis = (value: number | undefined) => value !== undefined && Number.isFinite(value) ? Math.max(-1, Math.min(1, value)) : 0;
+  return { x: axis(tone?.x), y: axis(tone?.y), bypassed: tone?.bypassed ?? false };
+}
 
 export const stoppedStatus: RouteStatus = {
   state: "stopped",
@@ -27,8 +34,8 @@ export const defaultConfig: AppConfig = {
 
 export function controlsFromConfig(config: AppConfig): ControlUpdate {
   return {
-    micSources: config.micSources.map(({ id, gain, muted }) => ({ id, gain, muted })),
-    appSources: config.appSources.map(({ id, gain, muted }) => ({ id, gain, muted })),
+    micSources: config.micSources.map(({ id, gain, muted, tone }) => ({ id, gain, muted, tone: normalizeTone(tone) })),
+    appSources: config.appSources.map(({ id, gain, muted, tone }) => ({ id, gain, muted, tone: normalizeTone(tone) })),
     masterGain: config.masterGain,
     downmixToMono: config.downmixToMono,
   };
@@ -58,5 +65,5 @@ export function settingsFromConfig(config: AppSettings): AppSettings {
 }
 
 export function cloneAppConfig(config: AppConfig): AppConfig {
-  return { ...config, ...settingsFromConfig(config), micSources: config.micSources.map(source => ({ ...source })), appSources: config.appSources.map(source => ({ ...source })) };
+  return { ...config, ...settingsFromConfig(config), micSources: config.micSources.map(source => ({ ...source, tone: normalizeTone(source.tone) })), appSources: config.appSources.map(source => ({ ...source, tone: normalizeTone(source.tone) })) };
 }

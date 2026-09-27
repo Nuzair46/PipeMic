@@ -8,6 +8,8 @@ mod buffer;
 mod mixer;
 #[path = "../src/audio/resample.rs"]
 mod resample;
+#[path = "../src/audio/tone.rs"]
+mod tone;
 
 use std::{
     alloc::{GlobalAlloc, Layout, System},
@@ -35,7 +37,7 @@ unsafe impl GlobalAlloc for CountAllocations {
     }
 }
 
-fn measure(name: &str, mut block: impl FnMut()) {
+fn measure(name: &str, mut block: impl FnMut()) -> usize {
     const BLOCKS: usize = 10_000;
     for _ in 0..100 {
         block();
@@ -55,6 +57,7 @@ fn measure(name: &str, mut block: impl FnMut()) {
         times[BLOCKS / 2] as f64 / 1000.0,
         times[BLOCKS * 99 / 100] as f64 / 1000.0
     );
+    allocations
 }
 
 fn main() {
@@ -66,6 +69,7 @@ fn main() {
             id: format!("source:{i}"),
             gain: 1.0,
             muted: false,
+            tone: tone::ToneConfig::default(),
         })
         .collect();
 
@@ -124,4 +128,61 @@ fn main() {
         converter.process(black_box(&mixed), &mut converted);
         black_box(&converted);
     });
+
+    for (name, config, moving) in [
+        (
+            "8 neutral tone processors",
+            tone::ToneConfig::default(),
+            false,
+        ),
+        (
+            "8 active tone processors",
+            tone::ToneConfig {
+                x: 1.0,
+                y: 1.0,
+                bypassed: false,
+            },
+            false,
+        ),
+        (
+            "8 bypassed tone processors",
+            tone::ToneConfig {
+                x: 1.0,
+                y: 1.0,
+                bypassed: true,
+            },
+            false,
+        ),
+        (
+            "8 moving tone processors",
+            tone::ToneConfig {
+                x: 1.0,
+                y: 1.0,
+                bypassed: false,
+            },
+            true,
+        ),
+    ] {
+        let mut processors: Vec<_> = (0..SOURCES)
+            .map(|_| tone::ToneProcessor::default())
+            .collect();
+        let mut direction = 1.0;
+        let allocations = measure(name, || {
+            direction = -direction;
+            for (processor, frames) in processors.iter_mut().zip(&mut frames) {
+                frames.copy_from_slice(black_box(&input));
+                processor.set_tone(if moving {
+                    tone::ToneConfig {
+                        x: direction,
+                        ..config
+                    }
+                } else {
+                    config
+                });
+                processor.process(black_box(frames));
+            }
+            black_box(&frames);
+        });
+        assert_eq!(allocations, 0, "tone processing must not allocate");
+    }
 }

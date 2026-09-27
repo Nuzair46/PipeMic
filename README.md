@@ -53,6 +53,10 @@ VB-CABLE: https://www.vb-cable.com
 6. Click `Start`
 7. Adjust source gain, mute buttons, and master gain as needed
 
+Each source has a square tone pad beside its gain and meter. Drag horizontally between Lo/Hi or vertically between Mid −/Mid +, or focus the pad and use the arrow keys (Shift for larger steps, Home to center). The center leaves the sound unchanged. **Reset** centers the pad; **Bypass** disables tone while remembering its position. Tone applies live without restarting capture and saves automatically across launches.
+
+Tone uses a gentle ±6 dB EQ range: opposing 200 Hz low and 4 kHz high shelves on the horizontal axis, and a 1.5 kHz presence filter (Q 0.8) on the vertical axis. The stereo filters follow the [Audio EQ Cookbook](https://www.w3.org/TR/audio-eq-cookbook/), with 20 ms transitions. Source meters show the processed signal before gain. Boosting tone can raise the output level; use source gain to keep the mix from clipping.
+
 For a pink theme with Hello Kitty artwork and rounded controls, open `Settings`, turn on `Hello Kitty mode` under `Appearance`, and click `Save`. It is off by default and remembers your choice across launches. Toggling previews the theme; `Cancel` restores your saved choice.
 
 ## Notes (Important)

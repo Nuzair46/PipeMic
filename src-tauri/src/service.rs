@@ -121,9 +121,12 @@ mod tests {
     #[derive(Default)]
     struct FakeEngine {
         muted: bool,
+        tone: crate::audio::tone::ToneConfig,
+        starts: usize,
     }
     impl RoutingEngine for FakeEngine {
         fn start(&mut self, _: &AppConfig) -> AudioResult<RouteStatus> {
+            self.starts += 1;
             Ok(self.status())
         }
         fn stop(&mut self) -> RouteStatus {
@@ -131,6 +134,7 @@ mod tests {
         }
         fn update_controls(&mut self, controls: &ControlUpdate) -> RouteStatus {
             self.muted = controls.mic_sources[0].muted;
+            self.tone = controls.mic_sources[0].tone;
             self.status()
         }
         fn status(&mut self) -> RouteStatus {
@@ -167,5 +171,54 @@ mod tests {
         assert!(saved.hello_kitty_mode);
         assert_eq!(saved.mic_sources[0].gain, 0.7);
         assert!(service.status().warnings[0].contains("disk full"));
+    }
+
+    #[test]
+    fn live_tone_controls_flush_the_last_position_and_bypass_on_shutdown() {
+        let path = std::env::temp_dir().join(format!(
+            "pipemic-tone-service-{}-{}.json",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let config = AppConfig {
+            mic_sources: vec![config::MicSourceConfig::new("mic".into(), 0.7, false)],
+            app_sources: vec![config::AppSourceConfig::new(
+                "player.exe".into(),
+                None,
+                0.8,
+                false,
+            )],
+            ..AppConfig::default()
+        };
+        let mut service = RoutingService {
+            config: Ok(config.clone()),
+            engine: FakeEngine::default(),
+            writer: ConfigWriter::new(path.clone()),
+            load_warning: None,
+        };
+        let mut controls = ControlUpdate::from(&config);
+        for x in [0.25, -0.5, 0.75] {
+            controls.mic_sources[0].tone.x = x;
+            controls.app_sources[0].tone.y = -x;
+            service.controls(controls.clone()).unwrap();
+        }
+        controls.mic_sources[0].tone.bypassed = true;
+        controls.mic_sources[0].muted = true;
+        controls.app_sources[0].gain = 1.1;
+        service.controls(controls).unwrap();
+        let expected = service.config().unwrap();
+        assert_eq!(service.engine.starts, 0);
+        assert_eq!(service.engine.tone, expected.mic_sources[0].tone);
+        assert!(service.engine.muted);
+        service.shutdown().unwrap();
+        drop(service);
+        let (reloaded, warning) = config::load_config_with_recovery(&path).unwrap();
+        assert_eq!(reloaded, expected);
+        assert!(warning.is_none());
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(path.with_extension("json.bak"));
     }
 }

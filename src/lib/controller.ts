@@ -35,6 +35,8 @@ export class MixerController {
   private runningRevision = 0;
   private desiredRunning = false;
   private pending = 0;
+  private queuedControls?: Promise<void>;
+  private controlsRevision = 0;
   private refreshing?: Promise<void>;
   private readingStatus?: Promise<void>;
   private errors = new Map<string, string>();
@@ -121,12 +123,21 @@ export class MixerController {
 
   changeControls = (patch: Partial<AppConfig>) => {
     if (!this.state.ready) return Promise.resolve();
-    const config = { ...this.state.config, ...patch };
-    this.publish({ config });
-    return this.enqueue("Could not update controls", async revision => {
-      const status = await this.api.updateControls(controlsFromConfig(config));
+    this.publish({ config: { ...this.state.config, ...patch } });
+    if (this.queuedControls) {
+      this.controlsRevision = ++this.revision;
+      return this.queuedControls;
+    }
+    this.queuedControls = this.enqueue("Could not update controls", async () => {
+      // Allow one later update while IPC is in flight. Read the latest intent
+      // here so drags, gain/mute edits and source removal share one snapshot.
+      this.queuedControls = undefined;
+      const revision = this.controlsRevision;
+      const status = await this.api.updateControls(controlsFromConfig(this.state.config));
       if (revision === this.revision) this.acceptStatus(status);
     }).catch(() => undefined);
+    this.controlsRevision = this.revision;
+    return this.queuedControls;
   };
 
   changeTopology = (patch: Partial<AppConfig>) => {

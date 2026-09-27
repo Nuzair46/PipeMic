@@ -5,7 +5,12 @@
         "id": "mic:one",
         "deviceId": "one",
         "gain": 1.0,
-        "muted": false
+        "muted": false,
+        "tone": {
+          "x": 0.5,
+          "y": -0.25,
+          "bypassed": false
+        }
       }
     ],
     "appSources": [
@@ -14,7 +19,12 @@
         "executable": "player.exe",
         "displayName": "Player",
         "gain": 0.5,
-        "muted": true
+        "muted": true,
+        "tone": {
+          "x": -0.75,
+          "y": 0.625,
+          "bypassed": true
+        }
       }
     ],
     "outputDeviceId": "out",
@@ -35,14 +45,24 @@
       {
         "id": "mic:one",
         "gain": 1.0,
-        "muted": false
+        "muted": false,
+        "tone": {
+          "x": 0.5,
+          "y": -0.25,
+          "bypassed": false
+        }
       }
     ],
     "appSources": [
       {
         "id": "app:player.exe",
         "gain": 0.5,
-        "muted": true
+        "muted": true,
+        "tone": {
+          "x": -0.75,
+          "y": 0.625,
+          "bypassed": true
+        }
       }
     ],
     "masterGain": 1.0,

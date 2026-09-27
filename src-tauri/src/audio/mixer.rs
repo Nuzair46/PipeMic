@@ -11,6 +11,7 @@ pub struct SourceControl {
     pub id: String,
     pub gain: f32,
     pub muted: bool,
+    pub tone: super::tone::ToneConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
