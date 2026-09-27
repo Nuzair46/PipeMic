@@ -24,7 +24,7 @@ use windows::{
         System::Com::CoTaskMemFree,
         System::Variant::VT_BLOB,
     },
-    core::{AgileReference, HRESULT, IUnknown, Interface, PROPVARIANT},
+    core::{HRESULT, IUnknown, Interface, PROPVARIANT},
 };
 
 use super::{
@@ -173,44 +173,57 @@ pub(crate) fn open_render(spec: &RenderSpec) -> AudioResult<Box<dyn AudioRender>
 
 #[windows::core::implement(IActivateAudioInterfaceCompletionHandler)]
 struct ActivationHandler {
-    sender: StdMutex<Option<mpsc::Sender<Result<AgileReference<IAudioClient>, String>>>>,
+    sender: StdMutex<Option<mpsc::Sender<Result<(), String>>>>,
 }
 
 #[allow(non_snake_case)]
 impl IActivateAudioInterfaceCompletionHandler_Impl for ActivationHandler_Impl {
     fn ActivateCompleted(
         &self,
-        activateoperation: Option<&IActivateAudioInterfaceAsyncOperation>,
+        _activateoperation: Option<&IActivateAudioInterfaceAsyncOperation>,
     ) -> windows_core::Result<()> {
-        let result = unsafe { activated_audio_client(activateoperation) };
         if let Some(sender) = self.sender.lock().ok().and_then(|mut guard| guard.take()) {
-            let _ = sender.send(result);
+            let _ = sender.send(Ok(()));
         }
         Ok(())
     }
 }
 
 unsafe fn activated_audio_client(
-    activateoperation: Option<&IActivateAudioInterfaceAsyncOperation>,
-) -> Result<AgileReference<IAudioClient>, String> {
-    let operation = activateoperation.ok_or_else(|| {
-        "process loopback activation callback did not include an operation".to_string()
-    })?;
+    operation: &IActivateAudioInterfaceAsyncOperation,
+    receiver: mpsc::Receiver<Result<(), String>>,
+    stop: &std::sync::atomic::AtomicBool,
+) -> AudioResult<IAudioClient> {
+    super::activation::receive(receiver, stop, Duration::from_secs(5))?;
+    // The callback only signals completion. Retrieve and keep the COM client on
+    // this MTA worker; an agile reference would require an IAudioClient proxy
+    // that process-loopback clients do not necessarily provide.
     let mut activate_result = HRESULT(0);
     let mut activated: Option<IUnknown> = None;
     operation
         .GetActivateResult(&mut activate_result, &mut activated)
-        .map_err(|error| error.message().to_string())?;
-    activate_result
-        .ok()
-        .map_err(|error| error.message().to_string())?;
+        .map_err(|error| {
+            AudioError::CaptureFailed(format!(
+                "process loopback GetActivateResult failed: {}",
+                windows_error_detail(&error)
+            ))
+        })?;
+    activate_result.ok().map_err(|error| {
+        AudioError::CaptureFailed(format!(
+            "process loopback activation failed: {}",
+            windows_error_detail(&error)
+        ))
+    })?;
 
-    let unknown =
-        activated.ok_or_else(|| "process loopback activation returned no interface".to_string())?;
-    let client: IAudioClient = unknown
-        .cast()
-        .map_err(|error| error.message().to_string())?;
-    AgileReference::new(&client).map_err(|error| error.to_string())
+    let unknown = activated.ok_or_else(|| {
+        AudioError::CaptureFailed("process loopback activation returned no interface".to_string())
+    })?;
+    unknown.cast().map_err(|error| {
+        AudioError::CaptureFailed(format!(
+            "process loopback QueryInterface(IAudioClient) failed: {}",
+            windows_error_detail(&error)
+        ))
+    })
 }
 
 unsafe fn activate_process_loopback_client(
@@ -250,15 +263,20 @@ unsafe fn activate_process_loopback_client(
     }
     .into();
 
-    let _operation = ActivateAudioInterfaceAsync(
+    let operation = ActivateAudioInterfaceAsync(
         VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK,
         &IAudioClient::IID,
         Some(&*prop as *const PROPVARIANT),
         &handler,
-    )?;
+    )
+    .map_err(|error| {
+        AudioError::CaptureFailed(format!(
+            "process loopback ActivateAudioInterfaceAsync failed: {}",
+            windows_error_detail(&error)
+        ))
+    })?;
 
-    let client = super::activation::receive(receiver, stop, Duration::from_secs(5))?;
-    Ok(client.resolve()?)
+    activated_audio_client(&operation, receiver, stop)
 }
 
 impl WasapiCapture {
@@ -1032,4 +1050,125 @@ unsafe fn write_i24(ptr: *mut u8, sample: f32) {
     ptr::write_unaligned(ptr, (value & 0xff) as u8);
     ptr::write_unaligned(ptr.add(1), ((value >> 8) & 0xff) as u8);
     ptr::write_unaligned(ptr.add(2), ((value >> 16) & 0xff) as u8);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{Arc, atomic::AtomicBool};
+    use std::thread::{self, ThreadId};
+    use windows::Win32::{
+        Foundation::{E_ACCESSDENIED, E_FAIL, S_OK},
+        Media::Audio::IActivateAudioInterfaceAsyncOperation_Impl,
+    };
+
+    #[windows::core::implement(IActivateAudioInterfaceAsyncOperation)]
+    struct TestActivation {
+        reads: Arc<StdMutex<Vec<ThreadId>>>,
+        method_result: HRESULT,
+        activation_result: HRESULT,
+    }
+
+    impl IActivateAudioInterfaceAsyncOperation_Impl for TestActivation_Impl {
+        fn GetActivateResult(
+            &self,
+            result: *mut HRESULT,
+            interface: *mut Option<IUnknown>,
+        ) -> windows_core::Result<()> {
+            self.reads.lock().unwrap().push(thread::current().id());
+            self.method_result.ok()?;
+            unsafe {
+                *result = self.activation_result;
+                *interface = None;
+            }
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn activation_result_is_retrieved_on_the_capture_worker_not_the_callback() {
+        let _apartment = windows_wasapi::ComApartment::new().unwrap();
+        let reads = Arc::new(StdMutex::new(Vec::new()));
+        let operation: IActivateAudioInterfaceAsyncOperation = TestActivation {
+            reads: Arc::clone(&reads),
+            method_result: S_OK,
+            activation_result: E_ACCESSDENIED,
+        }
+        .into();
+        let (sender, receiver) = mpsc::channel();
+        let handler = ActivationHandler {
+            sender: StdMutex::new(Some(sender)),
+        };
+        let callback_reads = Arc::clone(&reads);
+        let callback = thread::spawn(move || {
+            let _apartment = windows_wasapi::ComApartment::new().unwrap();
+            let callback_operation: IActivateAudioInterfaceAsyncOperation = TestActivation {
+                reads: callback_reads,
+                method_result: S_OK,
+                activation_result: E_ACCESSDENIED,
+            }
+            .into();
+            let handler: IActivateAudioInterfaceCompletionHandler = handler.into();
+            unsafe {
+                handler.ActivateCompleted(&callback_operation).unwrap();
+            }
+        });
+        let error =
+            unsafe { activated_audio_client(&operation, receiver, &AtomicBool::new(false)) }
+                .unwrap_err()
+                .to_string();
+        callback.join().unwrap();
+        assert_eq!(*reads.lock().unwrap(), vec![thread::current().id()]);
+        assert!(error.contains("process loopback activation failed"));
+        assert!(error.contains("0x80070005"));
+        drop(operation);
+        assert_eq!(Arc::strong_count(&reads), 1);
+    }
+
+    #[test]
+    fn cancelled_activation_does_not_retrieve_an_interface_and_accepts_a_late_callback() {
+        let _apartment = windows_wasapi::ComApartment::new().unwrap();
+        let reads = Arc::new(StdMutex::new(Vec::new()));
+        let operation: IActivateAudioInterfaceAsyncOperation = TestActivation {
+            reads: Arc::clone(&reads),
+            method_result: S_OK,
+            activation_result: E_ACCESSDENIED,
+        }
+        .into();
+        let (sender, receiver) = mpsc::channel();
+        let handler: IActivateAudioInterfaceCompletionHandler = ActivationHandler {
+            sender: StdMutex::new(Some(sender)),
+        }
+        .into();
+        let error = unsafe { activated_audio_client(&operation, receiver, &AtomicBool::new(true)) }
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("Activation cancelled"));
+        unsafe {
+            handler.ActivateCompleted(&operation).unwrap();
+        }
+        assert!(reads.lock().unwrap().is_empty());
+        drop(handler);
+        drop(operation);
+        assert_eq!(Arc::strong_count(&reads), 1);
+    }
+
+    #[test]
+    fn activation_result_query_errors_include_the_stage_and_hresult() {
+        let _apartment = windows_wasapi::ComApartment::new().unwrap();
+        let operation: IActivateAudioInterfaceAsyncOperation = TestActivation {
+            reads: Arc::new(StdMutex::new(Vec::new())),
+            method_result: E_FAIL,
+            activation_result: S_OK,
+        }
+        .into();
+        let (sender, receiver) = mpsc::channel();
+        sender.send(Ok(())).unwrap();
+        let error =
+            unsafe { activated_audio_client(&operation, receiver, &AtomicBool::new(false)) }
+                .unwrap_err()
+                .to_string();
+        assert!(error.contains("process loopback GetActivateResult failed"));
+        assert!(error.contains("0x80004005"));
+    }
 }
