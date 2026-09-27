@@ -8,20 +8,28 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   core:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: yarn
+          cache-dependency-path: yarn.lock
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: src-tauri -> src-tauri/target
-      - run: yarn install --frozen-lockfile
+          workspaces: src-tauri -> target
+          shared-key: linux-core
+          cache-on-failure: true
+      - run: yarn install --frozen-lockfile --prefer-offline --non-interactive
       - run: yarn version:bump --check
       - run: yarn test
       - run: yarn build
@@ -29,18 +37,28 @@ jobs:
 
   windows:
     runs-on: windows-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: yarn
+          cache-dependency-path: yarn.lock
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: src-tauri -> src-tauri/target
-      - run: yarn install --frozen-lockfile
+          workspaces: src-tauri -> target
+          shared-key: windows-msvc
+          cache-on-failure: true
+      - name: Cache Tauri packaging tools
+        uses: actions/cache@v4
+        with:
+          path: ~/AppData/Local/tauri
+          key: ${{ runner.os }}-${{ runner.arch }}-tauri-tools-v1-${{ hashFiles('yarn.lock') }}
+      - run: yarn install --frozen-lockfile --prefer-offline --non-interactive
       - run: yarn build
-      - run: cargo test --manifest-path src-tauri/Cargo.toml --locked
+      # Match the bundle's profile/features so dependencies compile once.
+      - run: cargo test --manifest-path src-tauri/Cargo.toml --release --features tauri/custom-protocol --locked
       # Invoke the installed CLI directly so Yarn 1 cannot consume Cargo's separator.
-      - run: node node_modules/@tauri-apps/cli/tauri.js build --bundles nsis -- --locked
+      - run: node node_modules/@tauri-apps/cli/tauri.js build --bundles nsis --config src-tauri/tauri.ci.conf.json -- --locked

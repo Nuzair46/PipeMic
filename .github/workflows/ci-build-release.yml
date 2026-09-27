@@ -11,6 +11,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: pipemic-release
+  cancel-in-progress: false
+
 jobs:
   prepare_release:
     name: Prepare Release Manifests
@@ -40,7 +44,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
 
       - name: Bump version across all manifests
         shell: bash
@@ -117,8 +121,9 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: yarn
+          cache-dependency-path: yarn.lock
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
@@ -128,11 +133,18 @@ jobs:
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@v2
         with:
-          workspaces: |
-            src-tauri -> src-tauri/target
+          workspaces: src-tauri -> target
+          shared-key: windows-msvc
+          cache-on-failure: true
+
+      - name: Cache Tauri packaging tools
+        uses: actions/cache@v4
+        with:
+          path: ~/AppData/Local/tauri
+          key: ${{ runner.os }}-${{ runner.arch }}-tauri-tools-v1-${{ hashFiles('yarn.lock') }}
 
       - name: Install JS dependencies
-        run: yarn install --frozen-lockfile
+        run: yarn install --frozen-lockfile --prefer-offline --non-interactive
 
       - name: Check manifest versions
         run: yarn version:bump --check
@@ -144,11 +156,12 @@ jobs:
         run: yarn build
 
       - name: Run Rust tests
-        run: cargo test --manifest-path src-tauri/Cargo.toml --locked
+        # Match the bundle's profile/features so dependencies compile once.
+        run: cargo test --manifest-path src-tauri/Cargo.toml --release --features tauri/custom-protocol --locked
 
       - name: Build Windows app (NSIS)
         # Invoke the installed CLI directly so Yarn 1 cannot consume Cargo's separator.
-        run: node node_modules/@tauri-apps/cli/tauri.js build --bundles nsis -- --locked
+        run: node node_modules/@tauri-apps/cli/tauri.js build --bundles nsis --config src-tauri/tauri.ci.conf.json -- --locked
 
       - name: Upload release artifact
         uses: actions/upload-artifact@v4

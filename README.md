@@ -183,6 +183,10 @@ The full Tauri app target needs the platform runtime toolchain:
 - Release pipeline prepares the version bump without pushing, runs frontend/Rust checks, and builds the Windows NSIS installer. Only then does it atomically push the version commit and tag `vX.Y.Z` and publish the GitHub Release. If `main` changed during the build, publication stops and the workflow must be rerun.
 - Release artifacts are limited to `src-tauri/target/release/bundle/nsis/*setup.exe`
 
+CI caches Yarn packages, compiled Cargo dependencies under `src-tauri/target`, and Tauri's Windows packaging tools. Windows validation and release jobs share a Rust cache key, retain dependencies after failures, and run Rust tests with the same release profile/features as bundling. Both jobs build the frontend once and use `src-tauri/tauri.ci.conf.json` to skip Tauri's duplicate frontend build. Local builds retain the usual frontend build hook. New pushes cancel obsolete validation runs; release runs are serialized.
+
+Cache paths follow the [Rust cache action's workspace-relative target convention](https://github.com/Swatinem/rust-cache#example-usage). A first run or toolchain/dependency upgrade can still require compilation; subsequent runs should reuse compatible dependencies.
+
 Release process:
 
 1. Make sure your release commit is on `main`.
