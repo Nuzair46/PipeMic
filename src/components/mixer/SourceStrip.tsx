@@ -33,7 +33,7 @@ export function SourceStrip({
   const Icon = kind === "mic" ? Mic : Volume2;
 
   return (
-    <div className="grid h-[96px] min-w-0 grid-cols-[minmax(0,1fr)_minmax(150px,210px)_84px] items-center gap-4 overflow-hidden border-b border-border px-4 last:border-b-0">
+    <div className="source-strip grid h-[96px] min-w-0 grid-cols-[minmax(0,1fr)_minmax(150px,210px)_84px] items-center gap-4 overflow-hidden border-b border-border px-4 last:border-b-0">
       <div className="grid min-w-0 grid-cols-[36px_minmax(0,1fr)] gap-3">
         <Tooltip>
           <TooltipTrigger asChild>

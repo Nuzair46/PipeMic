@@ -63,6 +63,8 @@ pub struct AppConfig {
     pub shortcuts: ShortcutConfig,
     pub start_with_windows: bool,
     pub minimize_to_tray: bool,
+    #[serde(default)]
+    pub hello_kitty_mode: bool,
 }
 
 impl Default for AppConfig {
@@ -77,6 +79,7 @@ impl Default for AppConfig {
             shortcuts: ShortcutConfig::default(),
             start_with_windows: true,
             minimize_to_tray: true,
+            hello_kitty_mode: false,
         }
     }
 }
@@ -95,6 +98,8 @@ pub struct AppSettings {
     pub shortcuts: ShortcutConfig,
     pub start_with_windows: bool,
     pub minimize_to_tray: bool,
+    #[serde(default)]
+    pub hello_kitty_mode: bool,
 }
 
 impl AppConfig {
@@ -102,6 +107,7 @@ impl AppConfig {
         self.shortcuts = sanitize_shortcuts(settings.shortcuts);
         self.start_with_windows = settings.start_with_windows;
         self.minimize_to_tray = settings.minimize_to_tray;
+        self.hello_kitty_mode = settings.hello_kitty_mode;
     }
 }
 
@@ -234,6 +240,7 @@ struct RawAppConfig {
     shortcuts: Option<ShortcutConfig>,
     start_with_windows: Option<bool>,
     minimize_to_tray: Option<bool>,
+    hello_kitty_mode: Option<bool>,
     #[allow(dead_code)]
     excluded_processes: Option<Vec<String>>,
 
@@ -256,6 +263,7 @@ impl From<RawAppConfig> for AppConfig {
             shortcuts: sanitize_shortcuts(raw.shortcuts.unwrap_or_default()),
             start_with_windows: raw.start_with_windows.unwrap_or(true),
             minimize_to_tray: raw.minimize_to_tray.unwrap_or(true),
+            hello_kitty_mode: raw.hello_kitty_mode.unwrap_or(false),
             ..AppConfig::default()
         };
 
@@ -534,6 +542,7 @@ mod tests {
         assert_eq!(config.shortcuts, ShortcutConfig::default());
         assert!(config.start_with_windows);
         assert!(config.minimize_to_tray);
+        assert!(!config.hello_kitty_mode);
     }
 
     #[test]
@@ -556,6 +565,7 @@ mod tests {
             },
             start_with_windows: false,
             minimize_to_tray: false,
+            hello_kitty_mode: true,
             ..AppConfig::default()
         };
 
@@ -567,9 +577,18 @@ mod tests {
         assert!(raw.contains("downmixToMono"));
         assert!(raw.contains("startWithWindows"));
         assert!(raw.contains("minimizeToTray"));
+        assert!(raw.contains("helloKittyMode"));
         assert_eq!(load_config_from_path(&path).unwrap(), config);
 
-        let _ = fs::remove_file(path);
+        let disabled = AppConfig {
+            hello_kitty_mode: false,
+            ..config
+        };
+        save_config_to_path(&disabled, &path).unwrap();
+        assert_eq!(load_config_from_path(&path).unwrap(), disabled);
+
+        let _ = fs::remove_file(&path);
+        let _ = fs::remove_file(path.with_extension("json.bak"));
     }
 
     #[test]
@@ -611,6 +630,7 @@ mod tests {
         );
         assert_eq!(config.output_device_id, Some("cable".to_string()));
         assert_eq!(config.master_gain, 0.7);
+        assert!(!config.hello_kitty_mode);
 
         let _ = fs::remove_file(path);
     }

@@ -27,7 +27,8 @@
       "routing": "Ctrl+Alt+S"
     },
     "startWithWindows": true,
-    "minimizeToTray": true
+    "minimizeToTray": true,
+    "helloKittyMode": true
   },
   "controls": {
     "micSources": [
@@ -54,7 +55,8 @@
       "routing": "Ctrl+Alt+S"
     },
     "startWithWindows": true,
-    "minimizeToTray": true
+    "minimizeToTray": true,
+    "helloKittyMode": true
   },
   "status": {
     "state": "stopped",

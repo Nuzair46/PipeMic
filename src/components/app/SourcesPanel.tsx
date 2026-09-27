@@ -53,7 +53,7 @@ export function SourcesPanel({
   onRemoveAppSource,
 }: SourcesPanelProps) {
   return (
-    <section className="grid min-h-0 min-w-0 grid-rows-[44px_minmax(0,1fr)_minmax(0,1fr)] border-r border-border bg-background">
+    <section className="sources-panel grid min-h-0 min-w-0 grid-rows-[44px_minmax(0,1fr)_minmax(0,1fr)] border-r border-border bg-background">
       <div className="panel-heading">
         <div className="flex min-w-0 items-center gap-2">
           <SlidersHorizontal className="h-4 w-4 text-muted-foreground" />
@@ -158,7 +158,7 @@ function SourceSectionHeader({ icon, title, options, addDisabled, addLabel, onAd
   const [value, setValue] = useState("");
 
   return (
-    <div className="flex h-12 min-w-0 items-center justify-between gap-3 border-b border-border bg-muted/25 px-4">
+    <div className="source-section-heading flex h-12 min-w-0 items-center justify-between gap-3 border-b border-border bg-muted/25 px-4">
       <div className="flex min-w-0 items-center gap-2">
         {icon}
         <h3 className="truncate text-xs font-medium text-muted-foreground">{title}</h3>

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   api,
   appSourceId,
@@ -42,6 +42,20 @@ export default function App() {
   const onError = useCallback((title: string, message: string) => pushToast(title, message, "fail"), [pushToast]);
   const { config, status, captureDevices, renderDevices, sessions, ready, controller } = useMixer(onError);
   const booting = !ready;
+  const helloKittyMode = settingsOpen ? draftConfig.helloKittyMode : config.helloKittyMode;
+
+  useLayoutEffect(() => {
+    // Apply at the document root so portaled dialogs, menus, and toasts match.
+    if (helloKittyMode) {
+      document.documentElement.dataset.theme = "hello-kitty";
+    } else {
+      delete document.documentElement.dataset.theme;
+    }
+    return () => {
+      delete document.documentElement.dataset.theme;
+    };
+  }, [helloKittyMode]);
+
   const applyControlsConfig = controller.changeControls;
   const applyTopologyConfig = controller.changeTopology;
   const start = controller.start;
@@ -228,8 +242,8 @@ export default function App() {
   return (
     <ToastProvider swipeDirection="right">
       <TooltipProvider delayDuration={150}>
-        <div className="h-screen overflow-hidden bg-background p-5">
-          <main className="mx-auto grid h-[calc(100vh-40px)] min-h-[560px] max-w-[1240px] grid-rows-[64px_minmax(0,1fr)] overflow-hidden rounded-lg border border-border bg-background shadow-[0_20px_64px_rgba(0,0,0,0.42)]">
+        <div className="app-canvas h-screen overflow-hidden bg-background p-5">
+          <main className="mixer-shell mx-auto grid h-[calc(100vh-40px)] min-h-[560px] max-w-[1240px] grid-rows-[64px_minmax(0,1fr)] overflow-hidden rounded-lg border border-border bg-background shadow-[0_20px_64px_rgba(0,0,0,0.42)]">
             <AppHeader
               running={running}
               canStart={canStart}

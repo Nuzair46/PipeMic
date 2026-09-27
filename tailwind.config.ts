@@ -33,9 +33,10 @@ export default {
         },
       },
       borderRadius: {
-        lg: "8px",
-        md: "6px",
-        sm: "4px",
+        DEFAULT: "var(--radius)",
+        lg: "var(--radius-lg)",
+        md: "var(--radius-md)",
+        sm: "var(--radius-sm)",
       },
       fontFamily: {
         sans: ["Bahnschrift", "Aptos", "Segoe UI", "sans-serif"],
@@ -48,4 +49,3 @@ export default {
   },
   plugins: [],
 } satisfies Config;
-

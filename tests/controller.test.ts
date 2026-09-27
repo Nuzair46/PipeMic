@@ -131,3 +131,25 @@ test("native structured errors retain their message", () => {
   assert.equal(errorMessage({ message: "Disk full" }), "Disk full");
   assert.equal(errorMessage(new Error("Denied")), "Denied");
 });
+
+test("saved theme choices survive a new controller without restarting audio", async () => {
+  const context = setup({
+    getStatus: async () => running,
+    startRouting: async () => { throw new Error("Settings must not restart audio"); },
+    stopRouting: async () => { throw new Error("Settings must not stop audio"); },
+  });
+  let persisted = cloneAppConfig(context.config);
+  context.api.loadConfig = async () => cloneAppConfig(persisted);
+  context.api.applyAppSettings = async settings => (persisted = { ...persisted, ...settings });
+  await context.controller.refresh();
+  await context.controller.pollStatus();
+  for (const helloKittyMode of [true, false]) {
+    await context.controller.saveSettings({ ...settingsFromConfig(persisted), helloKittyMode });
+    assert.equal(context.controller.getSnapshot().status.state, "running");
+    const rebooted = new MixerController(context.api, (_title, message) => context.errors.push(message));
+    await rebooted.refresh();
+    assert.equal(rebooted.getSnapshot().config.helloKittyMode, helloKittyMode);
+    assert.deepEqual(rebooted.getSnapshot().config.micSources, context.config.micSources);
+  }
+  assert.deepEqual(context.errors, []);
+});
