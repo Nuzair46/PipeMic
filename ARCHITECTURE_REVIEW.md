@@ -12,7 +12,7 @@ All ten findings have code changes and regression coverage. The visible componen
 | 6. Settings ownership | `AppSettings` contains only shortcuts/startup/tray fields; both sides merge those fields into current config. |
 | 7. Recovery | Capture workers reconcile cached devices and process identity, retry failures with bounded backoff, preserve quiet live PIDs, and reopen replacement processes. Device lists refresh periodically and on focus. |
 | 8. IPC contracts | DTOs, typed commands, error normalization, and preview fixtures have separate modules. A shared JSON fixture is checked in Rust and TypeScript. |
-| 9. Native ownership | Thread-affine COM guards balance initialization and outlive clients. Activation sends owned agile references, including cleanup of late results after cancellation. |
+| 9. Native ownership | Thread-affine COM guards balance initialization and outlive clients. Activation callbacks send only completion notifications; the capture worker retrieves and owns the audio interface without requiring a marshaling proxy. Cancellation drops the receiver without transferring COM pointers. |
 | 10. Tests/releases | Injected controllers/engines/endpoints exercise failures and ordering. PR validation builds/tests the frontend and Windows app/installer. Releases validate prepared manifests before pushing an atomic commit/tag; version checks include Cargo.lock. |
 
 Additional changes extract orchestration from `App.tsx`, keep status polling single-flight, reuse processing buffers and meter maps, and document the [installer template baseline and customizations](src-tauri/nsis/README.md). The existing uninstall data-deletion option now includes the actual config directory.
